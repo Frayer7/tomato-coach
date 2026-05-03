@@ -72,6 +72,7 @@ const DEFAULT_SETTINGS = {
 const PRESET_MODEL_GROUPS = [
   {
     label: 'OpenAI',
+    suggestedBase: 'https://api.openai.com/v1',
     models: [
       { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
       { value: 'gpt-4o', label: 'GPT-4o' }
@@ -79,6 +80,7 @@ const PRESET_MODEL_GROUPS = [
   },
   {
     label: 'DeepSeek',
+    suggestedBase: 'https://api.deepseek.com/v1',
     models: [
       { value: 'deepseek-v3-0324', label: 'DeepSeek V3' },
       { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
@@ -87,6 +89,7 @@ const PRESET_MODEL_GROUPS = [
   },
   {
     label: 'Moonshot',
+    suggestedBase: 'https://api.moonshot.cn/v1',
     models: [
       { value: 'moonshot-v1-8k', label: 'Moonshot V1 8K' },
       { value: 'moonshot-v1-32k', label: 'Moonshot V1 32K' }
@@ -1267,6 +1270,16 @@ function renderModelSelector() {
   if (currentValue) {
     DOM.settingsModel.value = currentValue;
   }
+}
+
+function getSuggestedBaseForModel(modelValue) {
+  for (const group of PRESET_MODEL_GROUPS) {
+    if (group.models.some((model) => model.value === modelValue)) {
+      return group.suggestedBase || '';
+    }
+  }
+
+  return '';
 }
 
 function syncSettingsModelField(modelValue) {
@@ -3002,6 +3015,15 @@ function bindSettingsEvents() {
 
     if (isCustom) {
       DOM.settingsModelCustom.focus();
+    }
+
+    // 自动更新 API 地址为所选服务商的推荐地址
+    const selectedModel = DOM.settingsModel.value;
+    if (selectedModel !== 'custom') {
+      const suggested = getSuggestedBaseForModel(selectedModel);
+      if (suggested && DOM.settingsApiBase) {
+        DOM.settingsApiBase.value = suggested;
+      }
     }
   });
 

@@ -1338,3 +1338,20 @@ body {
 .pwd-prompt__desc { font-size: 14px; color: var(--color-text); margin: 0; }
 .pwd-prompt__hint { font-size: 13px; color: var(--color-text-secondary); margin: -8px 0 0; min-height: 18px; }
 .pwd-prompt__actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+.api-base-hints {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: #F5F5F5;
+  border-radius: 6px;
+  list-style: none;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.8;
+}
+
+.api-base-hint__label {
+  font-weight: 500;
+  color: var(--color-text);
+  margin-right: 2px;
+}
