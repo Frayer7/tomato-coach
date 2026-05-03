@@ -54,7 +54,7 @@ const STORAGE_KEYS = {
 const DEFAULT_SETTINGS = {
   apiKey: '',
   apiBase: 'https://api.openai.com/v1',
-  model: 'gpt-4o-mini',
+  model: 'deepseek-v4-flash',
   coachTone: 'gentle',
   timerDuration: 25,
   shortBreak: 5,
@@ -67,12 +67,35 @@ const DEFAULT_SETTINGS = {
   syncPassword: '' // 同步密码短语（不持久化，仅内存中使用）
 };
 
-const PRESET_MODELS = [
-  'gpt-4o-mini',
-  'gpt-4o',
-  'deepseek-chat',
-  'moonshot-v1-8k'
+// 模型预设列表，按服务商分组。
+// 未来新增/修改模型只需编辑此处，UI 自动更新。
+const PRESET_MODEL_GROUPS = [
+  {
+    label: 'OpenAI',
+    models: [
+      { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+      { value: 'gpt-4o', label: 'GPT-4o' }
+    ]
+  },
+  {
+    label: 'DeepSeek',
+    models: [
+      { value: 'deepseek-v3-0324', label: 'DeepSeek V3' },
+      { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+      { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' }
+    ]
+  },
+  {
+    label: 'Moonshot',
+    models: [
+      { value: 'moonshot-v1-8k', label: 'Moonshot V1 8K' },
+      { value: 'moonshot-v1-32k', label: 'Moonshot V1 32K' }
+    ]
+  }
 ];
+
+// 从分组中提取所有预设 value 的扁平数组，供 isPreset 判断使用
+const PRESET_MODELS = PRESET_MODEL_GROUPS.flatMap((group) => group.models.map((model) => model.value));
 
 const GIST_FILE_NAME = 'tomato-coach-data.json';
 const VOLATILE_SETTINGS_KEYS = new Set(['syncPassword']);
@@ -813,6 +836,7 @@ function cacheTimerDom() {
   DOM.settingsSyncSave = document.getElementById('settings-sync-save');
   DOM.settingsSyncNow = document.getElementById('settings-sync-now');
   DOM.toggleGithubTokenVisibility = document.getElementById('toggle-github-token-visibility');
+  renderModelSelector();
 }
 
 function padNumber(value) {
@@ -1214,10 +1238,44 @@ function getSelectedSettingsModelValue() {
   return DOM.settingsModel.value;
 }
 
+function renderModelSelector() {
+  if (!DOM.settingsModel) return;
+
+  const currentValue = DOM.settingsModel.value;
+
+  DOM.settingsModel.replaceChildren();
+
+  PRESET_MODEL_GROUPS.forEach((group) => {
+    const optgroup = document.createElement('optgroup');
+    optgroup.label = group.label;
+
+    group.models.forEach((model) => {
+      const option = document.createElement('option');
+      option.value = model.value;
+      option.textContent = model.label;
+      optgroup.appendChild(option);
+    });
+
+    DOM.settingsModel.appendChild(optgroup);
+  });
+
+  const customOption = document.createElement('option');
+  customOption.value = 'custom';
+  customOption.textContent = '✏️ 自定义';
+  DOM.settingsModel.appendChild(customOption);
+
+  if (currentValue) {
+    DOM.settingsModel.value = currentValue;
+  }
+}
+
 function syncSettingsModelField(modelValue) {
   if (!DOM.settingsModel || !DOM.settingsModelCustom) {
     return;
   }
+
+  // 确保选项已渲染（DOM 可能尚未填充）
+  if (DOM.settingsModel.options.length <= 1) renderModelSelector();
 
   const isPresetModel = PRESET_MODELS.includes(modelValue);
   DOM.settingsModel.value = isPresetModel ? modelValue : 'custom';
