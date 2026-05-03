@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#E53935">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="番茄教练">
+  <title>Tomato Coach</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <main class="app-main">
+      <section id="page-timer" class="page active">
+        <header class="timer-header">
+          <div>
+            <h1 class="timer-header__title">番茄教练</h1>
+          </div>
+          <div id="today-count" class="timer-header__count">今日 0 🍅</div>
+        </header>
+
+        <div id="coach-nag-area" class="coach-nag-area"></div>
+
+        <section class="timer-card" aria-labelledby="countdown-display">
+          <div id="countdown-display" class="countdown-display">25:00</div>
+          <p id="timer-status" class="timer-status">准备开始一个新的番茄。</p>
+          <div class="timer-actions">
+            <button id="start-timer-btn" class="btn btn--primary" type="button">开始番茄</button>
+            <button id="pause-timer-btn" class="btn btn--secondary" type="button" hidden>暂停</button>
+            <button id="stop-timer-btn" class="btn btn--ghost" type="button" hidden>停止</button>
+          </div>
+        </section>
+
+        <section class="records-panel" aria-labelledby="today-records-title">
+          <div class="section-heading">
+            <h2 id="today-records-title" class="section-heading__title">今日番茄</h2>
+          </div>
+          <div id="today-records" class="today-records"></div>
+        </section>
+      </section>
+
+      <section id="page-history" class="page">
+        <section class="history-panel" aria-labelledby="history-title">
+          <header class="history-header">
+            <button id="history-prev-month" class="month-nav-btn" type="button" aria-label="上一月">&lt;</button>
+            <h1 id="history-title" class="history-title">2026年5月</h1>
+            <button id="history-next-month" class="month-nav-btn" type="button" aria-label="下一月">&gt;</button>
+          </header>
+
+          <div class="calendar-weekdays" aria-hidden="true">
+            <span>日</span>
+            <span>一</span>
+            <span>二</span>
+            <span>三</span>
+            <span>四</span>
+            <span>五</span>
+            <span>六</span>
+          </div>
+
+          <div id="history-calendar" class="history-calendar"></div>
+
+          <section id="history-detail" class="history-detail" aria-labelledby="history-detail-title">
+            <div class="history-detail__header">
+              <h2 id="history-detail-title" class="history-detail__title">5月3日 的番茄（0 个）</h2>
+              <button id="history-add-record" class="btn btn--primary history-detail__add" type="button">+ 补录</button>
+            </div>
+            <div id="history-records" class="history-records"></div>
+          </section>
+        </section>
+      </section>
+
+      <section id="page-coach" class="page">
+        <section class="coach-page" aria-labelledby="coach-page-title">
+          <header class="coach-page__header">
+            <h1 id="coach-page-title" class="coach-page__title">教练中心</h1>
+            <p class="coach-page__subtitle">LLM 复盘与提醒池</p>
+          </header>
+
+          <section class="coach-tools" aria-labelledby="coach-tools-title">
+            <div class="section-heading">
+              <h2 id="coach-tools-title" class="section-heading__title">教练分析</h2>
+            </div>
+
+            <div id="coach-feedback" class="coach-feedback" hidden></div>
+
+            <div class="coach-tabs" role="tablist" aria-label="教练分析标签页">
+              <button
+                id="coach-tab-trigger-daily"
+                class="coach-tab active"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="coach-panel-daily"
+                data-coach-tab="daily"
+              >
+                📊 今日总结
+              </button>
+              <button
+                id="coach-tab-trigger-weekly"
+                class="coach-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="coach-panel-weekly"
+                data-coach-tab="weekly"
+              >
+                📈 周报
+              </button>
+              <button
+                id="coach-tab-trigger-chat"
+                class="coach-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="coach-panel-chat"
+                data-coach-tab="chat"
+              >
+                💬 自由提问
+              </button>
+            </div>
+
+            <section
+              id="coach-panel-daily"
+              class="coach-tab-panel active"
+              role="tabpanel"
+              aria-labelledby="coach-tab-trigger-daily"
+            >
+              <div class="coach-summary-overview">
+                <div id="daily-summary-count" class="coach-summary-overview__count">今日 0 个番茄</div>
+                <div id="daily-summary-preview" class="coach-record-preview"></div>
+              </div>
+
+              <button id="generate-daily-summary" class="btn btn--primary coach-action-btn" type="button">
+                <span class="coach-spinner" aria-hidden="true"></span>
+                <span class="coach-action-btn__label">✨ 生成今日教练报告</span>
+              </button>
+
+              <div id="daily-summary-result" class="coach-result-card coach-result-card--empty">
+                今天的教练报告会显示在这里。
+              </div>
+
+              <details class="report-history">
+                <summary class="report-history__summary">📋 历史日报</summary>
+                <div id="daily-report-history" class="report-history__list"></div>
+              </details>
+            </section>
+
+            <section
+              id="coach-panel-weekly"
+              class="coach-tab-panel"
+              role="tabpanel"
+              aria-labelledby="coach-tab-trigger-weekly"
+            >
+              <div class="coach-range-grid">
+                <label class="field coach-range-field" for="weekly-start-date">
+                  <span class="field__label">开始日期</span>
+                  <input id="weekly-start-date" class="field__input" type="date">
+                </label>
+                <label class="field coach-range-field" for="weekly-end-date">
+                  <span class="field__label">结束日期</span>
+                  <input id="weekly-end-date" class="field__input" type="date">
+                </label>
+              </div>
+
+              <button id="generate-weekly-report" class="btn btn--primary coach-action-btn" type="button">
+                <span class="coach-spinner" aria-hidden="true"></span>
+                <span class="coach-action-btn__label">📈 生成周报</span>
+              </button>
+
+              <div id="weekly-report-result" class="coach-result-card coach-result-card--empty">
+                选择日期范围后生成周报。
+              </div>
+
+              <details class="report-history">
+                <summary class="report-history__summary">📋 历史周报</summary>
+                <div id="weekly-report-history" class="report-history__list"></div>
+              </details>
+            </section>
+
+            <section
+              id="coach-panel-chat"
+              class="coach-tab-panel"
+              role="tabpanel"
+              aria-labelledby="coach-tab-trigger-chat"
+            >
+              <div id="chat-history" class="chat-history"></div>
+
+              <form id="chat-form" class="chat-form">
+                <textarea
+                  id="chat-input"
+                  class="chat-form__input"
+                  rows="3"
+                  placeholder="问教练一个问题，比如：我最近的打断模式是什么？"
+                ></textarea>
+                <button id="send-chat-btn" class="btn btn--primary coach-action-btn" type="submit">
+                  <span class="coach-spinner" aria-hidden="true"></span>
+                  <span class="coach-action-btn__label">发送</span>
+                </button>
+              </form>
+            </section>
+          </section>
+
+          <section class="coach-pool" aria-labelledby="coach-pool-title">
+            <div class="section-heading">
+              <h2 id="coach-pool-title" class="section-heading__title">提醒池</h2>
+            </div>
+
+            <div class="coach-reminder-group">
+              <h3 id="coach-active-title" class="coach-reminder-group__title">活跃提醒</h3>
+              <div id="coach-active-reminders" class="coach-reminder-list"></div>
+            </div>
+
+            <details class="coach-reminder-fold" open>
+              <summary class="coach-reminder-fold__summary">已改善</summary>
+              <div id="coach-improved-reminders" class="coach-reminder-list coach-reminder-list--fold"></div>
+            </details>
+
+            <details class="coach-reminder-fold">
+              <summary class="coach-reminder-fold__summary">已忽略 / 暂缓</summary>
+              <div id="coach-archived-reminders" class="coach-reminder-list coach-reminder-list--fold"></div>
+            </details>
+          </section>
+        </section>
+      </section>
+
+      <section id="page-settings" class="page">
+        <section class="settings-page">
+          <section id="settings-api-card" class="settings-card" aria-labelledby="settings-api-title">
+            <h2 id="settings-api-title" class="settings-card__title">⚙️ API 配置</h2>
+
+            <label class="settings-field" for="settings-api-key">
+              <span class="settings-field__label">API Key</span>
+              <div class="api-key-wrapper">
+                <input
+                  id="settings-api-key"
+                  class="settings-field__input"
+                  type="password"
+                  placeholder="sk-..."
+                >
+                <button id="toggle-api-key-visibility" type="button" aria-label="切换 API Key 可见性">👁</button>
+              </div>
+            </label>
+
+            <label class="settings-field" for="settings-api-base">
+              <span class="settings-field__label">API 地址</span>
+              <input
+                id="settings-api-base"
+                class="settings-field__input"
+                type="url"
+                placeholder="https://api.openai.com/v1"
+              >
+            </label>
+
+            <label class="settings-field" for="settings-model">
+              <span class="settings-field__label">模型</span>
+              <select id="settings-model" class="settings-field__input">
+                <option value="gpt-4o-mini">gpt-4o-mini</option>
+                <option value="gpt-4o">gpt-4o</option>
+                <option value="deepseek-chat">deepseek-chat</option>
+                <option value="moonshot-v1-8k">moonshot-v1-8k</option>
+                <option value="custom">custom</option>
+              </select>
+            </label>
+
+            <input
+              id="settings-model-custom"
+              class="settings-field__input"
+              type="text"
+              placeholder="输入自定义模型名"
+              hidden
+            >
+
+            <div class="settings-btn-row">
+              <button id="settings-api-save" class="btn btn--primary" type="button">💾 保存配置</button>
+              <button id="settings-api-test" class="btn btn--secondary" type="button">🔌 测试连接</button>
+            </div>
+          </section>
+
+          <section id="settings-tone-card" class="settings-card" aria-labelledby="settings-tone-title">
+            <h2 id="settings-tone-title" class="settings-card__title">🎭 教练语气</h2>
+
+            <div class="tone-options">
+              <button class="tone-option" type="button" data-tone="gentle">😊 温和鼓励</button>
+              <button class="tone-option" type="button" data-tone="sharp">🗡 犀利直接</button>
+              <button class="tone-option" type="button" data-tone="funny">🎭 逗比幽默</button>
+            </div>
+          </section>
+
+          <section id="settings-timer-card" class="settings-card" aria-labelledby="settings-timer-title">
+            <h2 id="settings-timer-title" class="settings-card__title">⏱ 番茄时长</h2>
+
+            <div class="timer-fields">
+              <label class="settings-field" for="settings-timer-duration">
+                <span class="settings-field__label">专注时长（分钟）</span>
+                <input
+                  id="settings-timer-duration"
+                  class="settings-field__input"
+                  type="number"
+                  min="5"
+                  max="90"
+                  inputmode="numeric"
+                >
+              </label>
+
+              <label class="settings-field" for="settings-short-break">
+                <span class="settings-field__label">短休息（分钟）</span>
+                <input
+                  id="settings-short-break"
+                  class="settings-field__input"
+                  type="number"
+                  min="1"
+                  max="30"
+                  inputmode="numeric"
+                >
+              </label>
+
+              <label class="settings-field" for="settings-long-break">
+                <span class="settings-field__label">长休息（分钟）</span>
+                <input
+                  id="settings-long-break"
+                  class="settings-field__input"
+                  type="number"
+                  min="5"
+                  max="60"
+                  inputmode="numeric"
+                >
+              </label>
+            </div>
+            <div class="settings-field settings-field--row">
+              <span class="settings-field__label">评价模式</span>
+              <div class="eval-mode-options">
+                <button class="eval-mode-btn" data-mode="full" type="button">📝 完整</button>
+                <button class="eval-mode-btn" data-mode="quick" type="button">⚡ 快速</button>
+              </div>
+            </div>
+            <p class="settings-field__hint">快速模式：只填质量星级和一句总结，其余字段取默认值（达成=完全、打断=否）。</p>
+
+            <button id="settings-timer-save" class="btn btn--primary" type="button">💾 保存时长</button>
+          </section>
+
+          <section id="settings-sync-card" class="settings-card" aria-labelledby="settings-sync-title">
+            <h2 id="settings-sync-title" class="settings-card__title">☁️ 数据云同步</h2>
+            <p class="settings-sync-note">通过 GitHub Gist 实现多端同步（需 GitHub 账号）。同步内容不含 API Key。<a href="https://github.com/settings/tokens/new?scopes=gist" target="_blank" rel="noopener noreferrer">点此创建 Token（只需 gist 权限）</a>。</p>
+
+            <label class="settings-field" for="settings-github-token">
+              <span class="settings-field__label">GitHub Token</span>
+              <div class="api-key-wrapper">
+                <input id="settings-github-token" class="settings-field__input" type="password" placeholder="ghp_...">
+                <button id="toggle-github-token-visibility" type="button" aria-label="切换可见性">👁</button>
+              </div>
+            </label>
+
+            <label class="settings-field" for="settings-gist-id">
+              <span class="settings-field__label">Gist ID（首次同步后自动填入）</span>
+              <input id="settings-gist-id" class="settings-field__input" type="text" placeholder="首次点击「立即同步」后自动生成" readonly>
+            </label>
+
+            <label class="settings-field" for="settings-pwd-hint">
+              <span class="settings-field__label">密码提示词（可选，存于本地）</span>
+              <input id="settings-pwd-hint" class="settings-field__input" type="text" placeholder="例如：和读书笔记一样的密码" autocomplete="off" maxlength="50">
+            </label>
+
+            <div class="settings-field settings-field--row">
+              <span class="settings-field__label">数据变更后自动同步</span>
+              <button id="settings-auto-sync-toggle" class="toggle-btn" type="button" aria-pressed="false">关</button>
+            </div>
+
+            <div id="settings-sync-status" class="settings-sync-status">尚未配置同步</div>
+
+            <div class="settings-btn-row">
+              <button id="settings-sync-save" class="btn btn--primary" type="button">💾 保存同步配置</button>
+              <button id="settings-sync-now" class="btn btn--secondary" type="button">🔄 立即同步</button>
+            </div>
+          </section>
+
+          <section id="settings-data-card" class="settings-card" aria-labelledby="settings-data-title">
+            <h2 id="settings-data-title" class="settings-card__title">📦 数据管理</h2>
+
+            <div class="settings-storage-indicator">
+              <div class="settings-storage-indicator__label">
+                <span>本地存储用量</span>
+                <span id="storage-usage-label" class="settings-storage-indicator__value">计算中…</span>
+              </div>
+              <div class="settings-storage-bar">
+                <div id="storage-bar-fill" class="settings-storage-bar__fill"></div>
+              </div>
+            </div>
+
+            <div class="data-group">
+              <div class="data-group__title">导出</div>
+              <div class="settings-btn-row">
+                <button id="export-copy-today" class="btn btn--secondary" type="button">📋 复制今日记录</button>
+                <button id="export-copy-week" class="btn btn--secondary" type="button">📋 复制本周记录</button>
+                <button id="export-csv" class="btn btn--secondary" type="button">⬇️ 下载 CSV</button>
+                <button id="export-json" class="btn btn--secondary" type="button">⬇️ 导出 JSON 备份</button>
+              </div>
+            </div>
+
+            <div class="data-group">
+              <div class="data-group__title">导入</div>
+              <div class="settings-btn-row">
+                <button id="import-json-btn" class="btn btn--secondary" type="button">⬆️ 导入 JSON 数据</button>
+              </div>
+              <input id="import-json-input" type="file" accept=".json" hidden>
+            </div>
+
+            <div class="data-group data-group--danger">
+              <div class="data-group__title">危险操作</div>
+              <hr>
+              <button id="clear-old-data" class="btn btn--ghost" type="button">🗑 清除 30 天前数据</button>
+              <button id="clear-all-data" class="btn btn--danger" type="button">💣 清除全部数据</button>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <nav class="tabbar" aria-label="主导航">
+      <button class="tabbar__item active" type="button" data-page="page-timer" aria-controls="page-timer">
+        <span class="tabbar__icon" aria-hidden="true">🍅</span>
+        <span class="tabbar__label">计时</span>
+      </button>
+      <button class="tabbar__item" type="button" data-page="page-history" aria-controls="page-history">
+        <span class="tabbar__icon" aria-hidden="true">📅</span>
+        <span class="tabbar__label">历史</span>
+      </button>
+      <button class="tabbar__item" type="button" data-page="page-coach" aria-controls="page-coach">
+        <span class="tabbar__icon" aria-hidden="true">🎓</span>
+        <span class="tabbar__label">教练</span>
+      </button>
+      <button class="tabbar__item" type="button" data-page="page-settings" aria-controls="page-settings">
+        <span class="tabbar__icon" aria-hidden="true">⚙️</span>
+        <span class="tabbar__label">设置</span>
+      </button>
+    </nav>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
