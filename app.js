@@ -762,7 +762,8 @@ const APP_STATE = {
   coachEventsBound: false,
   coachActiveTab: 'daily',
   coachChatHistory: [],
-  settingsEventsBound: false
+  settingsEventsBound: false,
+  pendingSwUpdate: false
 };
 
 const DOM = {};
@@ -3282,6 +3283,11 @@ function resetTimerState(options = {}) {
   APP_STATE.remainingSeconds = APP_STATE.sessionDurationMinutes * 60;
 
   updateTimerUI();
+
+  // 计时结束后，若有待处理的 SW 更新通知，此时再提示
+  if (APP_STATE.pendingSwUpdate) {
+    window.setTimeout(promptSwUpdate, 800);
+  }
 }
 
 function openRecordFormModal(options) {
@@ -4164,6 +4170,35 @@ function cleanOldRecords() {
   return saveRecords(filtered);
 }
 
+function handleSwUpdateNotice() {
+  // 如果当前正在计时，不立刻打扰，标记为待处理，等 resetTimerState() 结束后触发
+  if (APP_STATE.timerState !== TIMER_STATES.IDLE) {
+    APP_STATE.pendingSwUpdate = true;
+    return;
+  }
+  promptSwUpdate();
+}
+
+function promptSwUpdate() {
+  APP_STATE.pendingSwUpdate = false;
+  openModal(`
+    <h2 class="modal__title">🎉 发现新版本</h2>
+    <div class="modal__body">
+      <p style="margin-bottom:16px;line-height:1.6;">番茄教练已更新，刷新后即可使用新版本。<br>你的所有数据不受影响。</p>
+      <div class="modal__actions">
+        <button id="sw-update-later" class="btn btn--ghost" type="button">稍后再说</button>
+        <button id="sw-update-now" class="btn btn--primary" type="button">立即刷新</button>
+      </div>
+    </div>
+  `);
+  document.getElementById('sw-update-now').addEventListener('click', () => {
+    window.location.reload();
+  });
+  document.getElementById('sw-update-later').addEventListener('click', () => {
+    closeActiveModal();
+  });
+}
+
 function initApp() {
   cleanOldRecords();
   cleanOldReports();
@@ -4183,6 +4218,13 @@ function initApp() {
 
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
+
+    // 监听 SW 发来的更新通知
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if (event.data?.type === 'SW_UPDATED') {
+        handleSwUpdateNotice();
+      }
+    });
   }
 }
 
