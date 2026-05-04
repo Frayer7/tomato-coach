@@ -763,7 +763,8 @@ const APP_STATE = {
   coachActiveTab: 'daily',
   coachChatHistory: [],
   settingsEventsBound: false,
-  pendingSwUpdate: false
+  pendingSwUpdate: false,
+  sessionEndEpoch: 0
 };
 
 const DOM = {};
@@ -3276,6 +3277,7 @@ function resetTimerState(options = {}) {
   }
 
   APP_STATE.timerState = TIMER_STATES.IDLE;
+  APP_STATE.sessionEndEpoch = 0;
   APP_STATE.sessionGoal = '';
   APP_STATE.sessionStartTime = '';
   APP_STATE.sessionDate = today();
@@ -3761,7 +3763,11 @@ function startCountdown() {
   clearTimerInterval();
 
   APP_STATE.intervalId = window.setInterval(() => {
-    APP_STATE.remainingSeconds -= 1;
+    if (APP_STATE.timerState !== TIMER_STATES.RUNNING) return;
+
+    // 从绝对截止时间计算剩余秒数，而非递减，避免后台节流导致误差
+    const remaining = Math.ceil((APP_STATE.sessionEndEpoch - Date.now()) / 1000);
+    APP_STATE.remainingSeconds = Math.max(0, remaining);
 
     if (APP_STATE.remainingSeconds <= 0) {
       beginEvaluationFlow();
@@ -3769,7 +3775,7 @@ function startCountdown() {
     }
 
     updateTimerUI();
-  }, 1000);
+  }, 500); // 500ms 轮询，让误差不超过 0.5 秒
 }
 
 function startPomodoro(goal) {
@@ -3780,6 +3786,7 @@ function startPomodoro(goal) {
   APP_STATE.sessionDate = today();
   APP_STATE.sessionDurationMinutes = getTimerDurationMinutes();
   APP_STATE.remainingSeconds = APP_STATE.sessionDurationMinutes * 60;
+  APP_STATE.sessionEndEpoch = Date.now() + APP_STATE.sessionDurationMinutes * 60 * 1000;
   APP_STATE.timerState = TIMER_STATES.RUNNING;
 
   closeActiveModal();
@@ -3835,6 +3842,7 @@ function showGoalModal() {
 function handlePauseToggle() {
   if (APP_STATE.timerState === TIMER_STATES.RUNNING) {
     clearTimerInterval();
+    APP_STATE.sessionEndEpoch = 0; // 暂停期间 epoch 清零，remainingSeconds 是唯一时间源
     APP_STATE.timerState = TIMER_STATES.PAUSED;
     updateTimerUI();
     return;
@@ -3842,6 +3850,8 @@ function handlePauseToggle() {
 
   if (APP_STATE.timerState === TIMER_STATES.PAUSED) {
     APP_STATE.timerState = TIMER_STATES.RUNNING;
+    // 从当前剩余秒数重新锚定绝对截止时间
+    APP_STATE.sessionEndEpoch = Date.now() + APP_STATE.remainingSeconds * 1000;
     updateTimerUI();
     startCountdown();
   }
@@ -4226,6 +4236,22 @@ function initApp() {
       }
     });
   }
+
+  // 页面从后台恢复时，重新校准剩余时间并检查是否已到期
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (APP_STATE.timerState !== TIMER_STATES.RUNNING) return;
+    if (!APP_STATE.sessionEndEpoch) return;
+
+    const remaining = Math.ceil((APP_STATE.sessionEndEpoch - Date.now()) / 1000);
+    APP_STATE.remainingSeconds = Math.max(0, remaining);
+
+    if (APP_STATE.remainingSeconds <= 0) {
+      beginEvaluationFlow();
+    } else {
+      updateTimerUI();
+    }
+  });
 }
 
 document.addEventListener('DOMContentLoaded', initApp);
