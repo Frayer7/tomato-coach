@@ -1,3 +1,5 @@
+const BUILD_DATE = '2026-05-04'; // 每次发布时手动更新此日期
+
 /**
  * PomodoroRecord
  * id: 唯一标识
@@ -719,7 +721,8 @@ const TIMER_STATES = {
   IDLE: 'idle',
   RUNNING: 'running',
   PAUSED: 'paused',
-  EVALUATING: 'evaluating'
+  EVALUATING: 'evaluating',
+  BREAK: 'break'
 };
 
 // Reminder escalation rules:
@@ -748,7 +751,10 @@ const now = new Date();
 const APP_STATE = {
   timerState: TIMER_STATES.IDLE,
   intervalId: null,
+  alarmInterval: null,
   remainingSeconds: DEFAULT_SETTINGS.timerDuration * 60,
+  breakType: null,
+  pendingAlarm: false,
   sessionGoal: '',
   sessionStartTime: '',
   sessionDate: today(),
@@ -1086,11 +1092,14 @@ async function performSync() {
     return false;
   }
 
-  try {
-    const password = await promptSyncPassword('sync');
-    saveSettings({ syncPassword: password });
-  } catch (error) {
-    return false;
+  let password = getSettings().syncPassword || '';
+  if (!password) {
+    try {
+      password = await promptSyncPassword('sync');
+      saveSettings({ syncPassword: password });
+    } catch (error) {
+      return false;
+    }
   }
 
   renderSyncStatus('syncing');
@@ -1171,7 +1180,7 @@ async function performSync() {
     saveSettings({ gistId: activeGistId, lastSyncedAt: nowIso });
     refreshRecordViews();
     refreshReminderViews();
-    showToast(`✅ 同步完成：新增 ${addedRecordCount} 条记录，${addedReminderCount} 条提醒`);
+    showToast(`✅ 同步完成：本地 ${mergedRecords.length} 条记录（云端新增 ${addedRecordCount} 条）`);
     renderSyncStatus('ok');
     return true;
   } catch (error) {
@@ -1200,9 +1209,117 @@ async function performSync() {
     renderSyncStatus('error', message);
     return false;
   } finally {
-    saveSettings({ syncPassword: '' });
     _syncInProgress = previousSyncState;
   }
+}
+
+async function exportConfig() {
+  let passwordProvided = false;
+
+  try {
+    const settings = getSettings();
+    const payload = JSON.stringify({
+      apiKey: settings.apiKey || '',
+      apiBase: settings.apiBase || '',
+      model: settings.model || '',
+      githubToken: settings.githubToken || '',
+      gistId: settings.gistId || '',
+    });
+
+    const password = await promptSyncPassword('export');
+    saveSettings({ syncPassword: password });
+    passwordProvided = true;
+
+    const encrypted = await encryptData(payload);
+    const code = `CFG:${btoa(encrypted)}`;
+
+    if (!navigator.clipboard?.writeText) {
+      throw new Error('当前环境不支持自动复制');
+    }
+
+    await navigator.clipboard.writeText(code);
+    showToast('✅ 配置已复制到剪贴板，粘贴到新设备的“导入配置”即可');
+  } catch (error) {
+    if (error?.message === 'cancelled') {
+      return;
+    }
+
+    if (error?.message === 'no_password') {
+      showToast('请输入密码短语', 'error');
+      return;
+    }
+
+    showToast(`导出失败：${error.message}`, 'error');
+  } finally {
+    if (passwordProvided) {
+      saveSettings({ syncPassword: '' });
+    }
+  }
+}
+
+async function importConfig() {
+  const modal = openModal(`
+    <h2 class="modal__title">📥 导入配置</h2>
+    <div class="modal__body">
+      <p style="margin-bottom:12px;font-size:14px">粘贴从其他设备导出的配置码，再输入当时设置的密码</p>
+      <textarea id="config-import-code" class="settings-field__input" rows="4" placeholder="粘贴配置码（CFG:...）" style="width:100%;margin-bottom:12px"></textarea>
+      <div class="pwd-prompt__actions">
+        <button class="btn btn--ghost" id="config-import-cancel" type="button">取消</button>
+        <button class="btn btn--primary" id="config-import-confirm" type="button">导入</button>
+      </div>
+    </div>
+  `);
+
+  modal.querySelector('#config-import-cancel')?.addEventListener('click', () => closeActiveModal());
+  modal.querySelector('#config-import-confirm')?.addEventListener('click', async () => {
+    const code = modal.querySelector('#config-import-code')?.value.trim() || '';
+
+    if (!code.startsWith('CFG:')) {
+      showToast('配置码格式不正确，应以 CFG: 开头', 'error');
+      return;
+    }
+
+    closeActiveModal();
+
+    let passwordProvided = false;
+
+    try {
+      const password = await promptSyncPassword('import');
+      saveSettings({ syncPassword: password });
+      passwordProvided = true;
+
+      const encrypted = atob(code.slice(4));
+      const payload = JSON.parse(await decryptData(encrypted));
+
+      saveSettings({
+        apiKey: payload?.apiKey || '',
+        apiBase: payload?.apiBase || '',
+        model: payload?.model || '',
+        githubToken: payload?.githubToken || '',
+        gistId: payload?.gistId || '',
+      });
+
+      initSettingsPage();
+      showToast('✅ 配置导入成功！');
+    } catch (error) {
+      if (error?.message === 'cancelled') {
+        return;
+      }
+
+      if (error?.message === 'no_password') {
+        showToast('请输入密码短语', 'error');
+        return;
+      }
+
+      showToast('导入失败：密码错误或配置码已损坏', 'error');
+    } finally {
+      if (passwordProvided) {
+        saveSettings({ syncPassword: '' });
+      }
+    }
+  });
+
+  modal.querySelector('#config-import-code')?.focus();
 }
 
 function cancelDebouncedSync() {
@@ -1556,6 +1673,8 @@ function updateTimerUI() {
     DOM.timerStatus.textContent = `专注进行中：${APP_STATE.sessionGoal}`;
   } else if (APP_STATE.timerState === TIMER_STATES.PAUSED) {
     DOM.timerStatus.textContent = `已暂停：${APP_STATE.sessionGoal}`;
+  } else if (APP_STATE.timerState === TIMER_STATES.BREAK) {
+    DOM.timerStatus.textContent = APP_STATE.breakType === 'long' ? '长休息中，放松一下。' : '短休息中，喝口水吧。';
   } else if (APP_STATE.timerState === TIMER_STATES.EVALUATING) {
     DOM.timerStatus.textContent = '这个番茄结束了，来回顾一下。';
   } else {
@@ -1577,8 +1696,10 @@ function updateTimerUI() {
   if (DOM.stopTimerBtn) {
     DOM.stopTimerBtn.hidden = ![
       TIMER_STATES.RUNNING,
-      TIMER_STATES.PAUSED
+      TIMER_STATES.PAUSED,
+      TIMER_STATES.BREAK
     ].includes(APP_STATE.timerState);
+    DOM.stopTimerBtn.textContent = APP_STATE.timerState === TIMER_STATES.BREAK ? '结束休息' : '停止';
   }
 }
 
@@ -2694,6 +2815,12 @@ function initSettingsPage() {
     DOM.settingsAutoSyncToggle.setAttribute('aria-pressed', String(isOn));
   }
   renderSyncStatus();
+
+  const versionEl = document.getElementById('settings-version-display');
+  if (versionEl) {
+    const swVer = typeof VERSION !== 'undefined' ? VERSION : '?'; // sw.js 中的 VERSION 不在同一作用域，如需显示 SW 版本，在 SW_UPDATED 消息处理中更新
+    versionEl.textContent = `当前版本：${BUILD_DATE}`;
+  }
 }
 
 function buildRecordTextLine(record) {
@@ -3104,6 +3231,14 @@ function bindSettingsEvents() {
     });
   }
 
+  document.getElementById('settings-clear-sync-pwd')?.addEventListener('click', () => {
+    saveSettings({ syncPassword: '' });
+    showToast('密码已清除，下次同步时需重新输入');
+  });
+
+  document.getElementById('config-export-btn')?.addEventListener('click', exportConfig);
+  document.getElementById('config-import-btn')?.addEventListener('click', importConfig);
+
   DOM.settingsApiSave.addEventListener('click', () => {
     const apiKey = DOM.settingsApiKey.value.trim();
     const apiBase = DOM.settingsApiBase.value.trim() || DEFAULT_SETTINGS.apiBase;
@@ -3267,16 +3402,44 @@ function playBeep() {
   }
 }
 
+function startAlarm() {
+  stopAlarm();
+
+  let count = 0;
+  APP_STATE.alarmInterval = window.setInterval(() => {
+    playBeep();
+    count += 1;
+
+    if (count >= 8) {
+      stopAlarm();
+    }
+  }, 2000);
+
+  playBeep();
+}
+
+function stopAlarm() {
+  if (APP_STATE.alarmInterval) {
+    clearInterval(APP_STATE.alarmInterval);
+    APP_STATE.alarmInterval = null;
+  }
+}
+
 function resetTimerState(options = {}) {
   const shouldCloseModal = options.closeModal !== false;
 
   clearTimerInterval();
+  stopAlarm();
 
   if (shouldCloseModal) {
     closeActiveModal();
   }
 
+  document.getElementById('alarm-overlay')?.remove();
+
   APP_STATE.timerState = TIMER_STATES.IDLE;
+  APP_STATE.breakType = null;
+  APP_STATE.pendingAlarm = false;
   APP_STATE.sessionEndEpoch = 0;
   APP_STATE.sessionGoal = '';
   APP_STATE.sessionStartTime = '';
@@ -3550,6 +3713,10 @@ function openRecordFormModal(options) {
 }
 
 function openEvaluationModal() {
+  stopAlarm();
+  APP_STATE.pendingAlarm = false;
+  document.getElementById('alarm-overlay')?.remove();
+
   if (getSettings().quickEvaluate) {
     openQuickEvaluationModal();
     return;
@@ -3568,6 +3735,7 @@ function openEvaluationModal() {
 }
 
 function completeSessionEvaluation(formData) {
+  const shouldOfferBreak = APP_STATE.timerState === TIMER_STATES.EVALUATING;
   const endDate = new Date();
 
   addRecord({
@@ -3590,10 +3758,16 @@ function completeSessionEvaluation(formData) {
   });
 
   closeActiveModal();
-  resetTimerState({ closeModal: false });
   refreshRecordViews();
   checkAndAwardAchievements();
   refreshReminderViews();
+
+  if (shouldOfferBreak) {
+    openBreakSelectionModal();
+    return;
+  }
+
+  resetTimerState({ closeModal: false });
 }
 
 function openQuickEvaluationModal() {
@@ -3754,8 +3928,9 @@ function beginEvaluationFlow() {
   clearTimerInterval();
   APP_STATE.timerState = TIMER_STATES.EVALUATING;
   APP_STATE.remainingSeconds = 0;
+  APP_STATE.pendingAlarm = true;
   updateTimerUI();
-  playBeep();
+  startAlarm();
 
   // 锁屏通知 + 震动
   if ('vibrate' in navigator) {
@@ -3774,7 +3949,113 @@ function beginEvaluationFlow() {
     }).catch(() => {});
   }
 
-  openEvaluationModal();
+  if (document.visibilityState === 'visible') {
+    showAlarmOverlay();
+  }
+}
+
+function showAlarmOverlay() {
+  if (document.getElementById('alarm-overlay')) {
+    return;
+  }
+
+  if (!APP_STATE.alarmInterval) {
+    startAlarm();
+  }
+
+  const overlay = document.createElement('div');
+  overlay.id = 'alarm-overlay';
+  overlay.innerHTML = `
+    <div class="alarm-overlay__inner">
+      <div class="alarm-overlay__emoji">🍅</div>
+      <div class="alarm-overlay__title">番茄完成！</div>
+      <div class="alarm-overlay__goal">${escapeHtml(APP_STATE.sessionGoal || '')}</div>
+      <button class="btn btn--primary alarm-overlay__btn" id="alarm-dismiss-btn" type="button">好的，去评价</button>
+    </div>`;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#alarm-dismiss-btn')?.addEventListener('click', () => {
+    overlay.remove();
+    openEvaluationModal();
+  });
+}
+
+function openBreakSelectionModal() {
+  const settings = getSettings();
+  const shortMin = settings.shortBreak || 5;
+  const longMin = settings.longBreak || 15;
+  const modal = openModal(`
+    <h2 class="modal__title">🎉 番茄完成！选择休息方式</h2>
+    <div class="modal__body">
+      <div class="break-options">
+        <button class="btn btn--primary break-option-btn" type="button" data-type="short">☕ 短休息 ${shortMin} 分钟</button>
+        <button class="btn btn--primary break-option-btn" type="button" data-type="long">🛌 长休息 ${longMin} 分钟</button>
+        <button class="btn btn--ghost" id="break-skip-btn" type="button">跳过休息</button>
+      </div>
+    </div>
+  `);
+
+  modal.querySelectorAll('.break-option-btn').forEach((button) => {
+    button.addEventListener('click', () => {
+      const type = button.dataset.type;
+      closeActiveModal();
+      startBreakCountdown(type);
+    });
+  });
+
+  modal.querySelector('#break-skip-btn')?.addEventListener('click', () => {
+    closeActiveModal();
+    resetTimerState({ closeModal: false });
+  });
+}
+
+function startBreakCountdown(type) {
+  const settings = getSettings();
+  const minutes = type === 'long' ? (settings.longBreak || 15) : (settings.shortBreak || 5);
+
+  APP_STATE.timerState = TIMER_STATES.BREAK;
+  APP_STATE.breakType = type;
+  APP_STATE.remainingSeconds = minutes * 60;
+  APP_STATE.sessionEndEpoch = Date.now() + minutes * 60 * 1000;
+  updateTimerUI();
+
+  clearTimerInterval();
+  APP_STATE.intervalId = window.setInterval(() => {
+    if (APP_STATE.timerState !== TIMER_STATES.BREAK) return;
+
+    const remaining = Math.ceil((APP_STATE.sessionEndEpoch - Date.now()) / 1000);
+    APP_STATE.remainingSeconds = Math.max(0, remaining);
+
+    if (APP_STATE.remainingSeconds <= 0) {
+      endBreak();
+      return;
+    }
+
+    updateTimerUI();
+  }, 500);
+}
+
+function endBreak() {
+  clearTimerInterval();
+  playBeep();
+
+  if ('vibrate' in navigator) {
+    navigator.vibrate([200, 100, 200]);
+  }
+
+  if ('serviceWorker' in navigator && 'Notification' in window && Notification.permission === 'granted') {
+    navigator.serviceWorker.ready.then((reg) => {
+      reg.showNotification('⏰ 休息结束，准备下一个番茄！', {
+        body: '点击回到计时器',
+        icon: 'icons/icon-192.png',
+        tag: 'break-end',
+        renotify: true
+      });
+    }).catch(() => {});
+  }
+
+  resetTimerState();
+  showToast('☕ 休息结束，开始下一个番茄吧！');
 }
 
 function startCountdown() {
@@ -3876,11 +4157,13 @@ function handlePauseToggle() {
 }
 
 function handleStopTimer() {
-  if (![TIMER_STATES.RUNNING, TIMER_STATES.PAUSED].includes(APP_STATE.timerState)) {
+  if (![TIMER_STATES.RUNNING, TIMER_STATES.PAUSED, TIMER_STATES.BREAK].includes(APP_STATE.timerState)) {
     return;
   }
 
-  if (confirm('确定停止当前番茄吗？')) {
+  const confirmText = APP_STATE.timerState === TIMER_STATES.BREAK ? '确定结束当前休息吗？' : '确定停止当前番茄吗？';
+
+  if (confirm(confirmText)) {
     resetTimerState();
   }
 }
@@ -4250,6 +4533,10 @@ function initApp() {
     // 监听 SW 发来的更新通知
     navigator.serviceWorker.addEventListener('message', (event) => {
       if (event.data?.type === 'SW_UPDATED') {
+        const versionEl = document.getElementById('settings-version-display');
+        if (versionEl) {
+          versionEl.textContent = `当前版本：${BUILD_DATE}（SW v${event.data.version}）`;
+        }
         handleSwUpdateNotice();
       }
     });
@@ -4258,16 +4545,20 @@ function initApp() {
   // 页面从后台恢复时，重新校准剩余时间并检查是否已到期
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
-    if (APP_STATE.timerState !== TIMER_STATES.RUNNING) return;
-    if (!APP_STATE.sessionEndEpoch) return;
 
-    const remaining = Math.ceil((APP_STATE.sessionEndEpoch - Date.now()) / 1000);
-    APP_STATE.remainingSeconds = Math.max(0, remaining);
+    if (APP_STATE.timerState === TIMER_STATES.RUNNING && APP_STATE.sessionEndEpoch) {
+      const remaining = Math.ceil((APP_STATE.sessionEndEpoch - Date.now()) / 1000);
+      APP_STATE.remainingSeconds = Math.max(0, remaining);
 
-    if (APP_STATE.remainingSeconds <= 0) {
-      beginEvaluationFlow();
-    } else {
-      updateTimerUI();
+      if (APP_STATE.remainingSeconds <= 0) {
+        beginEvaluationFlow();
+      } else {
+        updateTimerUI();
+      }
+    }
+
+    if (APP_STATE.pendingAlarm) {
+      showAlarmOverlay();
     }
   });
 

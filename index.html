@@ -342,41 +342,6 @@
             <button id="settings-timer-save" class="btn btn--primary" type="button">💾 保存时长</button>
           </section>
 
-          <section id="settings-sync-card" class="settings-card" aria-labelledby="settings-sync-title">
-            <h2 id="settings-sync-title" class="settings-card__title">☁️ 数据云同步</h2>
-            <p class="settings-sync-note">通过 GitHub Gist 实现多端同步（需 GitHub 账号）。同步内容不含 API Key。<a href="https://github.com/settings/tokens/new?scopes=gist" target="_blank" rel="noopener noreferrer">点此创建 Token（只需 gist 权限）</a>。</p>
-
-            <label class="settings-field" for="settings-github-token">
-              <span class="settings-field__label">GitHub Token</span>
-              <div class="api-key-wrapper">
-                <input id="settings-github-token" class="settings-field__input" type="password" placeholder="ghp_...">
-                <button id="toggle-github-token-visibility" type="button" aria-label="切换可见性">👁</button>
-              </div>
-            </label>
-
-            <label class="settings-field" for="settings-gist-id">
-              <span class="settings-field__label">Gist ID（首次同步后自动填入）</span>
-              <input id="settings-gist-id" class="settings-field__input" type="text" placeholder="首次点击「立即同步」后自动生成" readonly>
-            </label>
-
-            <label class="settings-field" for="settings-pwd-hint">
-              <span class="settings-field__label">密码提示词（可选，存于本地）</span>
-              <input id="settings-pwd-hint" class="settings-field__input" type="text" placeholder="例如：和读书笔记一样的密码" autocomplete="off" maxlength="50">
-            </label>
-
-            <div class="settings-field settings-field--row">
-              <span class="settings-field__label">数据变更后自动同步</span>
-              <button id="settings-auto-sync-toggle" class="toggle-btn" type="button" aria-pressed="false">关</button>
-            </div>
-
-            <div id="settings-sync-status" class="settings-sync-status">尚未配置同步</div>
-
-            <div class="settings-btn-row">
-              <button id="settings-sync-save" class="btn btn--primary" type="button">💾 保存同步配置</button>
-              <button id="settings-sync-now" class="btn btn--secondary" type="button">🔄 立即同步</button>
-            </div>
-          </section>
-
           <section id="settings-data-card" class="settings-card" aria-labelledby="settings-data-title">
             <h2 id="settings-data-title" class="settings-card__title">📦 数据管理</h2>
 
@@ -415,6 +380,54 @@
               <button id="clear-all-data" class="btn btn--danger" type="button">💣 清除全部数据</button>
             </div>
           </section>
+
+          <section class="settings-card" aria-labelledby="settings-config-title">
+            <h2 id="settings-config-title" class="settings-card__title">🔑 配置迁移</h2>
+            <p class="settings-card__desc">将 API Key 与 GitHub Token 导出为加密字符串，在新设备粘贴导入即可恢复，无需重新输入。</p>
+            <div class="settings-field-row settings-btn-row">
+              <button class="btn btn--secondary" id="config-export-btn" type="button">📤 导出配置</button>
+              <button class="btn btn--secondary" id="config-import-btn" type="button">📥 导入配置</button>
+            </div>
+          </section>
+
+          <section id="settings-sync-card" class="settings-card" aria-labelledby="settings-sync-title">
+            <h2 id="settings-sync-title" class="settings-card__title">☁️ 数据云同步</h2>
+            <p class="settings-sync-note">通过 GitHub Gist 实现多端同步（需 GitHub 账号）。同步内容不含 API Key。<a href="https://github.com/settings/tokens/new?scopes=gist" target="_blank" rel="noopener noreferrer">点此创建 Token（只需 gist 权限）</a>。</p>
+
+            <label class="settings-field" for="settings-github-token">
+              <span class="settings-field__label">GitHub Token</span>
+              <div class="api-key-wrapper">
+                <input id="settings-github-token" class="settings-field__input" type="password" placeholder="ghp_...">
+                <button id="toggle-github-token-visibility" type="button" aria-label="切换可见性">👁</button>
+              </div>
+            </label>
+
+            <label class="settings-field" for="settings-gist-id">
+              <span class="settings-field__label">Gist ID（首次同步后自动填入）</span>
+              <input id="settings-gist-id" class="settings-field__input" type="text" placeholder="首次点击「立即同步」后自动生成" readonly>
+            </label>
+
+            <label class="settings-field" for="settings-pwd-hint">
+              <span class="settings-field__label">密码提示词（可选，存于本地）</span>
+              <input id="settings-pwd-hint" class="settings-field__input" type="text" placeholder="例如：和读书笔记一样的密码" autocomplete="off" maxlength="50">
+            </label>
+
+            <div class="settings-field settings-field--row">
+              <span class="settings-field__label">数据变更后自动同步</span>
+              <button id="settings-auto-sync-toggle" class="toggle-btn" type="button" aria-pressed="false">关</button>
+            </div>
+
+            <div id="settings-sync-status" class="settings-sync-status">尚未配置同步</div>
+
+            <div class="settings-btn-row">
+              <button id="settings-sync-save" class="btn btn--primary" type="button">💾 保存同步配置</button>
+              <button id="settings-sync-now" class="btn btn--secondary" type="button">🔄 立即同步</button>
+            </div>
+            <p>同步会合并双向数据。如手机数据为空，请确保 Token 和 Gist ID 与电脑一致，首次同步时密码也须相同。</p>
+            <button id="settings-clear-sync-pwd" class="btn btn--ghost btn--sm" type="button">清除已记忆的密码</button>
+          </section>
+
+          <p class="settings-version-info" id="settings-version-display"></p>
         </section>
       </section>
     </main>
