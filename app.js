@@ -3339,7 +3339,7 @@ function openRecordFormModal(options) {
           <div class="rating-field__label">产出质量</div>
           <div class="star-rating">
             ${[1, 2, 3, 4, 5].map((value) => {
-              return `<button class="star-rating__star" type="button" data-value="${value}" aria-label="${value} 星">⭐</button>`;
+              return `<button class="star-rating__star" type="button" data-value="${value}" aria-label="${value} 星">★</button>`;
             }).join('')}
           </div>
         </div>
@@ -3606,7 +3606,7 @@ function openQuickEvaluationModal() {
           <div class="rating-field__label">产出质量</div>
           <div class="star-rating">
             ${[1, 2, 3, 4, 5].map((value) => {
-              return `<button class="star-rating__star" type="button" data-value="${value}" aria-label="${value} 星">⭐</button>`;
+              return `<button class="star-rating__star" type="button" data-value="${value}" aria-label="${value} 星">★</button>`;
             }).join('')}
           </div>
         </div>
@@ -3756,6 +3756,24 @@ function beginEvaluationFlow() {
   APP_STATE.remainingSeconds = 0;
   updateTimerUI();
   playBeep();
+
+  // 锁屏通知 + 震动
+  if ('vibrate' in navigator) {
+    navigator.vibrate([200, 100, 200]);
+  }
+  if ('serviceWorker' in navigator && 'Notification' in window && Notification.permission === 'granted') {
+    navigator.serviceWorker.ready.then((reg) => {
+      reg.showNotification('🍅 番茄时钟结束！', {
+        body: APP_STATE.sessionGoal ? `目标：${APP_STATE.sessionGoal}` : '去记录这个番茄吧',
+        icon: 'icons/icon-192.png',
+        badge: 'icons/icon-192.png',
+        tag: 'pomodoro-end',
+        renotify: true,
+        requireInteraction: false,
+      });
+    }).catch(() => {});
+  }
+
   openEvaluationModal();
 }
 
@@ -4252,6 +4270,11 @@ function initApp() {
       updateTimerUI();
     }
   });
+
+  // 请求通知权限，供番茄结束时发锁屏提醒
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
 }
 
 document.addEventListener('DOMContentLoaded', initApp);

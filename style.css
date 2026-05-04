@@ -1140,6 +1140,7 @@ body {
   cursor: pointer;
   font-size: 30px;
   line-height: 1;
+  touch-action: manipulation;
 }
 
 .star-rating__star.is-active {
