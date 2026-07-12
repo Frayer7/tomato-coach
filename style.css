@@ -1418,3 +1418,294 @@ body {
     background: rgba(180, 20, 20, 0.99);
   }
 }
+
+/* ===== 项目分类 / 精力 / 目标（WS1、WS3、WS4） ===== */
+.record-card__goal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.record-card__project {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.record-card__goal-text {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.field__optional {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  font-weight: 400;
+}
+
+.energy-field {
+  margin-top: 4px;
+}
+
+.energy-field__label {
+  font-size: 14px;
+  color: var(--color-text);
+  margin-bottom: 8px;
+}
+
+.energy-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.energy-option {
+  border: 1px solid #E0E0E0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.energy-option.is-selected {
+  border-color: var(--color-primary);
+  background: #FFF5F5;
+  color: var(--color-primary);
+}
+
+/* 项目管理 */
+.project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid #EEE;
+  border-radius: 10px;
+}
+
+.project-row__swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.project-row__name {
+  flex: 1;
+  font-size: 14px;
+  color: var(--color-text);
+}
+
+.project-row__action {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 4px;
+}
+
+.color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.color-swatch {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.color-swatch.is-selected {
+  border-color: var(--color-text);
+  box-shadow: 0 0 0 2px #fff inset;
+}
+
+/* 目标 + 进度环 */
+.goals-panel {
+  margin-top: 8px;
+}
+
+.goal-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  background: var(--color-surface);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  margin-bottom: 10px;
+}
+
+.goal-card__ring {
+  flex-shrink: 0;
+}
+
+.goal-card__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.goal-card__title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.goal-card__project {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.goal-card__meta {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.goal-card__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.goal-card__action {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  font-size: 15px;
+  padding: 2px 4px;
+}
+
+.progress-ring__track {
+  stroke: #EEE;
+}
+
+.progress-ring__value {
+  transition: stroke-dashoffset 0.4s ease;
+  stroke-linecap: round;
+}
+
+.progress-ring__label {
+  font-size: 13px;
+  font-weight: 700;
+  fill: var(--color-text);
+}
+
+.goals-empty {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  padding: 8px 0;
+}
+
+.section-heading__add {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* 提醒反馈原因 / 自我评价 / 模态提示（本轮） */
+.coach-reminder-card__reason {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: #FAFAFA;
+  border-left: 3px solid #BDBDBD;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.modal__hint {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin: 0 0 12px;
+}
+
+.daily-self-note-field {
+  display: block;
+  margin: 12px 0;
+}
+
+.daily-self-note {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.auto-weekly-note {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: #FFF5F5;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--color-primary);
+  line-height: 1.5;
+}
+
+.weekday-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.weekday-option {
+  border: 1px solid #E0E0E0;
+  background: transparent;
+  border-radius: 8px;
+  width: 40px;
+  height: 36px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.weekday-option.is-selected {
+  border-color: var(--color-primary);
+  background: #FFF5F5;
+  color: var(--color-primary);
+}
+
+.chat-hint {
+  align-self: center;
+  margin: 2px 0 6px;
+  padding: 3px 10px;
+  background: #EEF3FF;
+  color: #3949AB;
+  border-radius: 12px;
+  font-size: 12px;
+}

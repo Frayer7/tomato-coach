@@ -1,4 +1,4 @@
-const BUILD_DATE = '2026-05-04'; // 每次发布时手动更新此日期
+const BUILD_DATE = '2026-07-12'; // 每次发布时手动更新此日期
 
 /**
  * PomodoroRecord
@@ -8,11 +8,34 @@ const BUILD_DATE = '2026-05-04'; // 每次发布时手动更新此日期
  * endTime: 结束时间，格式 HH:MM
  * duration: 专注时长，单位分钟
  * goal: 本次番茄钟目标
+ * projectId: 所属项目 ID（默认 uncategorized）
  * achievement: 完成情况，full | partial | none
  * quality: 专注质量，范围 1-5
+ * energy: 精力/状态，范围 1-5（可选）
  * summary: 本次总结
  * interrupted: 是否被中断
  * interruptionNote: 中断说明
+ * createdAt: 创建时间，ISO 字符串
+ */
+
+/**
+ * Project（项目/分类）
+ * id: 唯一标识
+ * name: 项目名
+ * color: 标签颜色（HEX）
+ * icon: emoji 图标
+ * archived: 是否归档隐藏
+ */
+
+/**
+ * Goal（目标，挂在项目下）
+ * id: 唯一标识
+ * projectId: 所属项目 ID
+ * title: 目标标题
+ * targetPomodoros: 目标番茄数
+ * startDate: 统计起始日期 YYYY-MM-DD（进度只计此后番茄）
+ * deadline: 截止日期 YYYY-MM-DD（可选）
+ * status: active | done | paused
  * createdAt: 创建时间，ISO 字符串
  */
 
@@ -50,8 +73,38 @@ const STORAGE_KEYS = {
   settings: 'tc_settings',
   reports: 'tc_reports',
   achievements: 'tc_achievements',
+  projects: 'tc_projects',
+  goals: 'tc_goals',
+  journals: 'tc_journals',
+  chats: 'tc_chats',
   syncPwdHint: 'tc_sync_pwd_hint' // 仅存一个密码提示词，帮助用户回忆
 };
+
+// 未分类项目的固定 ID，所有历史记录与未指定项目的番茄都归到此项目
+const UNCATEGORIZED_PROJECT_ID = 'uncategorized';
+
+// 首次使用时写入的预设项目，用户可在设置页增删改
+const DEFAULT_PROJECTS = [
+  { id: UNCATEGORIZED_PROJECT_ID, name: '未分类', color: '#9E9E9E', icon: '📥', archived: false },
+  { id: 'work', name: '工作', color: '#1E88E5', icon: '💼', archived: false },
+  { id: 'study', name: '学习', color: '#43A047', icon: '📚', archived: false },
+  { id: 'reading', name: '读书', color: '#8E24AA', icon: '📖', archived: false },
+  { id: 'side', name: '副业', color: '#FB8C00', icon: '🚀', archived: false }
+];
+
+const PROJECT_COLOR_PRESETS = [
+  '#1E88E5', '#43A047', '#8E24AA', '#FB8C00', '#E53935',
+  '#00ACC1', '#FDD835', '#6D4C41', '#3949AB', '#9E9E9E'
+];
+
+// 精力/状态选项，供评价表单选择，作为 LLM 分析的情绪维度
+const ENERGY_OPTIONS = [
+  { value: 5, label: '⚡ 充沛' },
+  { value: 4, label: '🙂 不错' },
+  { value: 3, label: '😐 一般' },
+  { value: 2, label: '🥱 疲惫' },
+  { value: 1, label: '😵 枯竭' }
+];
 
 const DEFAULT_SETTINGS = {
   apiKey: '',
@@ -62,6 +115,9 @@ const DEFAULT_SETTINGS = {
   shortBreak: 5,
   longBreak: 15,
   quickEvaluate: false,
+  autoWeeklySummary: true,
+  weeklySummaryWeekday: 0,
+  lastAutoWeeklyKey: '',
   githubToken: '',
   gistId: '',
   autoSync: false,
@@ -148,6 +204,273 @@ function saveReminders(arr) {
   }
 }
 
+function getProjects() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.projects);
+
+    if (raw === null) {
+      // 首次使用：写入预设项目
+      saveProjects(DEFAULT_PROJECTS);
+      return DEFAULT_PROJECTS.slice();
+    }
+
+    const parsed = JSON.parse(raw);
+    const projects = Array.isArray(parsed) ? parsed : [];
+
+    // 确保「未分类」项目始终存在
+    if (!projects.some((project) => project.id === UNCATEGORIZED_PROJECT_ID)) {
+      projects.unshift(DEFAULT_PROJECTS[0]);
+    }
+
+    return projects;
+  } catch (error) {
+    return DEFAULT_PROJECTS.slice();
+  }
+}
+
+function saveProjects(arr) {
+  try {
+    const projects = Array.isArray(arr) ? arr : [];
+    localStorage.setItem(STORAGE_KEYS.projects, JSON.stringify(projects));
+    return projects;
+  } catch (error) {
+    return [];
+  }
+}
+
+function getActiveProjects() {
+  return getProjects().filter((project) => !project.archived);
+}
+
+function getProjectById(projectId) {
+  return getProjects().find((project) => project.id === (projectId || UNCATEGORIZED_PROJECT_ID))
+    || getProjects().find((project) => project.id === UNCATEGORIZED_PROJECT_ID)
+    || DEFAULT_PROJECTS[0];
+}
+
+function addProject(project) {
+  const projects = getProjects();
+  projects.push(project);
+  saveProjects(projects);
+  scheduleDebouncedSync();
+  return projects;
+}
+
+function updateProject(id, patch) {
+  const projects = getProjects().map((project) => {
+    return project.id === id ? { ...project, ...patch } : project;
+  });
+  saveProjects(projects);
+  scheduleDebouncedSync();
+  return projects;
+}
+
+function deleteProject(id) {
+  if (id === UNCATEGORIZED_PROJECT_ID) {
+    return getProjects();
+  }
+
+  // 该项目下的番茄改归「未分类」，其目标一并删除
+  const records = getRecords().map((record) => {
+    return record.projectId === id ? { ...record, projectId: UNCATEGORIZED_PROJECT_ID } : record;
+  });
+  saveRecords(records);
+
+  const goals = getGoals().filter((goal) => goal.projectId !== id);
+  saveGoals(goals);
+
+  const projects = getProjects().filter((project) => project.id !== id);
+  saveProjects(projects);
+  scheduleDebouncedSync();
+  return projects;
+}
+
+function getGoals() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.goals);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveGoals(arr) {
+  try {
+    const goals = Array.isArray(arr) ? arr : [];
+    localStorage.setItem(STORAGE_KEYS.goals, JSON.stringify(goals));
+    return goals;
+  } catch (error) {
+    return [];
+  }
+}
+
+function addGoal(goal) {
+  const goals = getGoals();
+  goals.push(goal);
+  saveGoals(goals);
+  scheduleDebouncedSync();
+  return goals;
+}
+
+function updateGoal(id, patch) {
+  const goals = getGoals().map((goal) => {
+    return goal.id === id ? { ...goal, ...patch } : goal;
+  });
+  saveGoals(goals);
+  scheduleDebouncedSync();
+  return goals;
+}
+
+function deleteGoal(id) {
+  const goals = getGoals().filter((goal) => goal.id !== id);
+  saveGoals(goals);
+  scheduleDebouncedSync();
+  return goals;
+}
+
+// 一次性迁移：确保项目预设存在，并把没有 projectId 的旧番茄归到「未分类」
+function ensureProjectMigration() {
+  getProjects(); // 触发首次预设写入
+
+  const records = getRecords();
+  let changed = false;
+
+  records.forEach((record) => {
+    if (!record.projectId) {
+      record.projectId = UNCATEGORIZED_PROJECT_ID;
+      changed = true;
+    }
+  });
+
+  if (changed) {
+    saveRecords(records);
+  }
+}
+
+// 目标进度：统计该目标所属项目在时间窗内已完成的番茄数
+function getGoalProgress(goal) {
+  if (!goal) {
+    return { done: 0, target: 0, percent: 0 };
+  }
+
+  const target = Number(goal.targetPomodoros) || 0;
+  const records = getRecords().filter((record) => {
+    if ((record.projectId || UNCATEGORIZED_PROJECT_ID) !== goal.projectId) {
+      return false;
+    }
+
+    if (goal.startDate && record.date < goal.startDate) {
+      return false;
+    }
+
+    return true;
+  });
+  const done = records.length;
+  const percent = target > 0 ? Math.min(100, Math.round((done / target) * 100)) : 0;
+
+  return { done, target, percent };
+}
+
+// 每日自我评价（日记），结构为 { [date]: text }
+function getJournals() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.journals);
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function saveJournals(obj) {
+  try {
+    const journals = obj && typeof obj === 'object' && !Array.isArray(obj) ? obj : {};
+    localStorage.setItem(STORAGE_KEYS.journals, JSON.stringify(journals));
+    return journals;
+  } catch (error) {
+    return {};
+  }
+}
+
+function getJournal(dateStr) {
+  return getJournals()[dateStr] || '';
+}
+
+function setJournal(dateStr, text) {
+  const journals = getJournals();
+  const trimmed = String(text || '').trim();
+
+  if (trimmed) {
+    journals[dateStr] = trimmed;
+  } else {
+    delete journals[dateStr];
+  }
+
+  saveJournals(journals);
+  scheduleDebouncedSync();
+  return journals;
+}
+
+// 合并两份日记：按日期，本地优先；远端独有的日期补入
+function mergeJournals(localJournals, remoteJournals) {
+  const local = localJournals && typeof localJournals === 'object' ? localJournals : {};
+  const remote = remoteJournals && typeof remoteJournals === 'object' ? remoteJournals : {};
+  return { ...remote, ...local };
+}
+
+// 自由提问对话记录（全部保留），每条为一次问答
+function getChats() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.chats);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function saveChats(arr) {
+  try {
+    const chats = Array.isArray(arr) ? arr : [];
+    localStorage.setItem(STORAGE_KEYS.chats, JSON.stringify(chats));
+    return chats;
+  } catch (error) {
+    return [];
+  }
+}
+
+function addChatEntry(question, answer) {
+  const chats = getChats();
+  chats.push({
+    id: generateId(),
+    date: today(),
+    createdAt: new Date().toISOString(),
+    question: String(question || ''),
+    answer: String(answer || '')
+  });
+  saveChats(chats);
+  scheduleDebouncedSync();
+  return chats;
+}
+
+function mergeChats(localChats, remoteChats) {
+  return mergeById(localChats, remoteChats);
+}
+
+// 从持久化的对话记录恢复内存中的对话（按时间排序）
+function loadChatHistoryFromStore() {
+  const chats = getChats()
+    .slice()
+    .sort((left, right) => (left.createdAt || '').localeCompare(right.createdAt || ''));
+
+  APP_STATE.coachChatHistory = [];
+  chats.forEach((chat) => {
+    if (chat.question) APP_STATE.coachChatHistory.push({ role: 'user', content: chat.question });
+    if (chat.answer) APP_STATE.coachChatHistory.push({ role: 'assistant', content: chat.answer });
+  });
+}
+
 function getSettings() {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.settings);
@@ -225,12 +548,23 @@ function addReport(report) {
 }
 
 function cleanOldReports() {
-  const reports = getReports()
-    .slice()
-    .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
-    .slice(0, 30);
+  // 按类型分别保留最近 30 条，避免日报过多把周报挤掉（周报需长期用于纵向对比）
+  const byType = {};
+  getReports().forEach((report) => {
+    const type = report.type || 'daily';
+    (byType[type] = byType[type] || []).push(report);
+  });
 
-  return saveReports(reports);
+  const kept = [];
+  Object.keys(byType).forEach((type) => {
+    const sorted = byType[type]
+      .slice()
+      .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
+      .slice(0, 30);
+    kept.push(...sorted);
+  });
+
+  return saveReports(kept);
 }
 
 function getStorageUsageInfo() {
@@ -591,6 +925,44 @@ function mergeRecords(localRecords, remoteRecords) {
   return Array.from(map.values());
 }
 
+// 项目/目标按 id 合并：本地优先（冲突时保留本地），双方独有的都保留
+function mergeById(localItems, remoteItems) {
+  const map = new Map();
+
+  (Array.isArray(remoteItems) ? remoteItems : []).forEach((item) => {
+    if (item && item.id) {
+      map.set(item.id, item);
+    }
+  });
+
+  (Array.isArray(localItems) ? localItems : []).forEach((item) => {
+    if (item && item.id) {
+      map.set(item.id, item);
+    }
+  });
+
+  return Array.from(map.values());
+}
+
+function mergeProjects(localProjects, remoteProjects) {
+  const merged = mergeById(localProjects, remoteProjects);
+
+  // 确保「未分类」始终存在
+  if (!merged.some((project) => project.id === UNCATEGORIZED_PROJECT_ID)) {
+    merged.unshift(DEFAULT_PROJECTS[0]);
+  }
+
+  return merged;
+}
+
+function mergeGoals(localGoals, remoteGoals) {
+  return mergeById(localGoals, remoteGoals);
+}
+
+function mergeReports(localReports, remoteReports) {
+  return mergeById(localReports, remoteReports);
+}
+
 function mergeReminders(localReminders, remoteReminders) {
   const STATUS_PRIORITY = { improved: 4, active: 3, deferred: 2, ignored: 1 };
   const map = new Map();
@@ -756,6 +1128,7 @@ const APP_STATE = {
   breakType: null,
   pendingAlarm: false,
   sessionGoal: '',
+  sessionProjectId: UNCATEGORIZED_PROJECT_ID,
   sessionStartTime: '',
   sessionDate: today(),
   sessionDurationMinutes: DEFAULT_SETTINGS.timerDuration,
@@ -770,8 +1143,15 @@ const APP_STATE = {
   coachChatHistory: [],
   settingsEventsBound: false,
   pendingSwUpdate: false,
-  sessionEndEpoch: 0
+  sessionEndEpoch: 0,
+  endTimeoutId: null
 };
+
+const NOTIFICATION_ICON =
+  "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍅</text></svg>";
+
+let _keepAliveAudio = null;
+let _keepAliveAudioUrl = null;
 
 const DOM = {};
 
@@ -806,6 +1186,7 @@ function cacheTimerDom() {
   DOM.dailySummaryPreview = document.getElementById('daily-summary-preview');
   DOM.generateDailySummaryBtn = document.getElementById('generate-daily-summary');
   DOM.dailySummaryResult = document.getElementById('daily-summary-result');
+  DOM.dailySelfNote = document.getElementById('daily-self-note');
   DOM.weeklyStartDate = document.getElementById('weekly-start-date');
   DOM.weeklyEndDate = document.getElementById('weekly-end-date');
   DOM.generateWeeklyReportBtn = document.getElementById('generate-weekly-report');
@@ -830,6 +1211,7 @@ function cacheTimerDom() {
   DOM.exportCopyToday = document.getElementById('export-copy-today');
   DOM.exportCopyWeek = document.getElementById('export-copy-week');
   DOM.exportCsv = document.getElementById('export-csv');
+  DOM.exportLlmXls = document.getElementById('export-llm-xls');
   DOM.exportJson = document.getElementById('export-json');
   DOM.importJsonBtn = document.getElementById('import-json-btn');
   DOM.importJsonInput = document.getElementById('import-json-input');
@@ -1111,6 +1493,11 @@ async function performSync() {
     const nowIso = new Date().toISOString();
     const localRecords = getRecords();
     const localReminders = getReminders();
+    const localProjects = getProjects();
+    const localGoals = getGoals();
+    const localReports = getReports();
+    const localJournals = getJournals();
+    const localChats = getChats();
     let activeGistId = gistId;
 
     if (!activeGistId) {
@@ -1128,10 +1515,15 @@ async function performSync() {
 
     if (!activeGistId) {
       const encryptedPayload = await encryptData(JSON.stringify({
-        version: 1,
+        version: 3,
         lastModified: nowIso,
         records: localRecords,
-        reminders: localReminders
+        reminders: localReminders,
+        projects: localProjects,
+        goals: localGoals,
+        reports: localReports,
+        journals: localJournals,
+        chats: localChats
       }));
       const created = await createGist(token, {
         encrypted: true,
@@ -1159,17 +1551,34 @@ async function performSync() {
 
     const mergedRecords = mergeRecords(localRecords, Array.isArray(remoteData.records) ? remoteData.records : []);
     const mergedReminders = mergeReminders(localReminders, Array.isArray(remoteData.reminders) ? remoteData.reminders : []);
+    const mergedProjects = mergeProjects(localProjects, Array.isArray(remoteData.projects) ? remoteData.projects : []);
+    const mergedGoals = mergeGoals(localGoals, Array.isArray(remoteData.goals) ? remoteData.goals : []);
+    const mergedReports = mergeReports(localReports, Array.isArray(remoteData.reports) ? remoteData.reports : []);
+    const mergedJournals = mergeJournals(localJournals, remoteData.journals);
+    const mergedChats = mergeChats(localChats, Array.isArray(remoteData.chats) ? remoteData.chats : []);
     const addedRecordCount = Math.max(0, mergedRecords.length - localRecords.length);
     const addedReminderCount = Math.max(0, mergedReminders.length - localReminders.length);
 
     saveRecords(mergedRecords);
     saveReminders(mergedReminders);
+    saveProjects(mergedProjects);
+    saveGoals(mergedGoals);
+    saveReports(mergedReports);
+    saveJournals(mergedJournals);
+    saveChats(mergedChats);
+    cleanOldReports();
+    loadChatHistoryFromStore();
 
     const encryptedPayload = await encryptData(JSON.stringify({
-      version: 1,
+      version: 3,
       lastModified: nowIso,
       records: mergedRecords,
-      reminders: mergedReminders
+      reminders: mergedReminders,
+      projects: mergedProjects,
+      goals: mergedGoals,
+      reports: getReports(),
+      journals: mergedJournals,
+      chats: mergedChats
     }));
 
     await updateGistData(token, activeGistId, {
@@ -1180,6 +1589,9 @@ async function performSync() {
     saveSettings({ gistId: activeGistId, lastSyncedAt: nowIso });
     refreshRecordViews();
     refreshReminderViews();
+    renderReportHistory('daily');
+    renderReportHistory('weekly');
+    renderChatHistory();
     showToast(`✅ 同步完成：本地 ${mergedRecords.length} 条记录（云端新增 ${addedRecordCount} 条）`);
     renderSyncStatus('ok');
     return true;
@@ -1592,15 +2004,19 @@ function markReminderImproved(reminderId) {
   });
 }
 
-function deferReminder(reminderId) {
+function deferReminder(reminderId, reason = '') {
   updateReminder(reminderId, {
-    status: 'deferred'
+    status: 'deferred',
+    feedbackReason: String(reason || '').trim(),
+    statusChangedDate: today()
   });
 }
 
-function ignoreReminder(reminderId) {
+function ignoreReminder(reminderId, reason = '') {
   updateReminder(reminderId, {
-    status: 'ignored'
+    status: 'ignored',
+    feedbackReason: String(reason || '').trim(),
+    statusChangedDate: today()
   });
 }
 
@@ -1719,6 +2135,11 @@ function createRecordCard(record, options = {}) {
   const accent = document.createElement('div');
   accent.className = 'record-card__accent';
 
+  const project = getProjectById(record.projectId);
+  if (project) {
+    accent.style.background = project.color || '#9E9E9E';
+  }
+
   const body = document.createElement('div');
   body.className = 'record-card__body';
 
@@ -1727,7 +2148,8 @@ function createRecordCard(record, options = {}) {
 
   const meta = document.createElement('div');
   meta.className = 'record-card__meta';
-  meta.textContent = `${record.startTime}-${record.endTime} | ⭐${record.quality}颗 | ${ACHIEVEMENT_ICONS[record.achievement] || '❔'}`;
+  const energyText = record.energy ? ` | 精力${'●'.repeat(Number(record.energy))}` : '';
+  meta.textContent = `${record.startTime}-${record.endTime} | ⭐${record.quality}颗 | ${ACHIEVEMENT_ICONS[record.achievement] || '❔'}${energyText}`;
 
   header.appendChild(meta);
 
@@ -1755,7 +2177,19 @@ function createRecordCard(record, options = {}) {
 
   const goal = document.createElement('div');
   goal.className = 'record-card__goal';
-  goal.textContent = record.goal;
+
+  if (project) {
+    const tag = document.createElement('span');
+    tag.className = 'record-card__project';
+    tag.style.background = project.color || '#9E9E9E';
+    tag.textContent = `${project.icon || ''} ${project.name}`.trim();
+    goal.appendChild(tag);
+  }
+
+  const goalText = document.createElement('span');
+  goalText.className = 'record-card__goal-text';
+  goalText.textContent = record.goal;
+  goal.appendChild(goalText);
 
   const summary = document.createElement('div');
   summary.className = 'record-card__summary';
@@ -1823,7 +2257,268 @@ function refreshRecordViews() {
   renderTodayRecords();
   renderHistoryView();
   renderDailySummaryPreview();
+  renderGoals();
   scheduleDebouncedSync();
+}
+
+// 生成 SVG 进度环
+function createProgressRing(percent, size = 56) {
+  const stroke = 6;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const clamped = Math.max(0, Math.min(100, percent));
+  const offset = circumference * (1 - clamped / 100);
+  const color = clamped >= 100 ? '#43A047' : '#E53935';
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'goal-card__ring');
+  svg.setAttribute('width', String(size));
+  svg.setAttribute('height', String(size));
+  svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+
+  const track = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  track.setAttribute('class', 'progress-ring__track');
+  track.setAttribute('cx', String(size / 2));
+  track.setAttribute('cy', String(size / 2));
+  track.setAttribute('r', String(radius));
+  track.setAttribute('fill', 'none');
+  track.setAttribute('stroke-width', String(stroke));
+
+  const value = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  value.setAttribute('class', 'progress-ring__value');
+  value.setAttribute('cx', String(size / 2));
+  value.setAttribute('cy', String(size / 2));
+  value.setAttribute('r', String(radius));
+  value.setAttribute('fill', 'none');
+  value.setAttribute('stroke', color);
+  value.setAttribute('stroke-width', String(stroke));
+  value.setAttribute('stroke-dasharray', String(circumference));
+  value.setAttribute('stroke-dashoffset', String(offset));
+  value.setAttribute('transform', `rotate(-90 ${size / 2} ${size / 2})`);
+
+  const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  label.setAttribute('class', 'progress-ring__label');
+  label.setAttribute('x', '50%');
+  label.setAttribute('y', '50%');
+  label.setAttribute('text-anchor', 'middle');
+  label.setAttribute('dominant-baseline', 'central');
+  label.textContent = `${clamped}%`;
+
+  svg.append(track, value, label);
+  return svg;
+}
+
+function getGoalDeadlineHint(goal, progress) {
+  if (!goal.deadline) {
+    return '';
+  }
+
+  const msPerDay = 86400000;
+  const deadlineTime = new Date(`${goal.deadline}T00:00:00`).getTime();
+  const todayTime = new Date(`${today()}T00:00:00`).getTime();
+
+  if (Number.isNaN(deadlineTime)) {
+    return '';
+  }
+
+  const daysLeft = Math.round((deadlineTime - todayTime) / msPerDay);
+
+  if (daysLeft < 0) {
+    return '已过截止日期';
+  }
+
+  const remaining = Math.max(0, progress.target - progress.done);
+
+  if (remaining <= 0) {
+    return `剩 ${daysLeft} 天 · 已达标 🎉`;
+  }
+
+  if (daysLeft === 0) {
+    return `今天截止 · 还差 ${remaining} 个`;
+  }
+
+  const perDay = (remaining / daysLeft).toFixed(1);
+  return `剩 ${daysLeft} 天 · 需日均 ${perDay} 个`;
+}
+
+function renderGoals() {
+  const container = document.getElementById('goals-list');
+
+  if (!container) {
+    return;
+  }
+
+  container.replaceChildren();
+  const goals = getGoals().filter((goal) => goal.status !== 'paused');
+
+  if (!goals.length) {
+    const empty = document.createElement('div');
+    empty.className = 'goals-empty';
+    empty.textContent = '还没有目标。点「+ 新建目标」给某个项目设定番茄数目标吧。';
+    container.appendChild(empty);
+    return;
+  }
+
+  // 未达标的排前面
+  goals.sort((left, right) => {
+    return getGoalProgress(left).percent - getGoalProgress(right).percent;
+  });
+
+  goals.forEach((goal) => {
+    const progress = getGoalProgress(goal);
+    const project = getProjectById(goal.projectId);
+    const card = document.createElement('article');
+    card.className = 'goal-card';
+
+    card.appendChild(createProgressRing(progress.percent));
+
+    const info = document.createElement('div');
+    info.className = 'goal-card__info';
+
+    const title = document.createElement('div');
+    title.className = 'goal-card__title';
+
+    if (project) {
+      const tag = document.createElement('span');
+      tag.className = 'goal-card__project';
+      tag.style.background = project.color || '#9E9E9E';
+      tag.textContent = `${project.icon || ''} ${project.name}`.trim();
+      title.appendChild(tag);
+    }
+
+    const titleText = document.createElement('span');
+    titleText.textContent = goal.title;
+    title.appendChild(titleText);
+
+    const meta = document.createElement('div');
+    meta.className = 'goal-card__meta';
+    const deadlineHint = getGoalDeadlineHint(goal, progress);
+    meta.textContent = `${progress.done} / ${progress.target} 🍅${deadlineHint ? ` · ${deadlineHint}` : ''}`;
+
+    info.append(title, meta);
+
+    const actions = document.createElement('div');
+    actions.className = 'goal-card__actions';
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'goal-card__action';
+    editBtn.type = 'button';
+    editBtn.textContent = '✏️';
+    editBtn.setAttribute('aria-label', '编辑目标');
+    editBtn.addEventListener('click', () => openGoalEditModal(goal));
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'goal-card__action';
+    delBtn.type = 'button';
+    delBtn.textContent = '🗑️';
+    delBtn.setAttribute('aria-label', '删除目标');
+    delBtn.addEventListener('click', () => {
+      if (confirm(`删除目标「${goal.title}」？`)) {
+        deleteGoal(goal.id);
+        renderGoals();
+        showToast('目标已删除');
+      }
+    });
+
+    actions.append(editBtn, delBtn);
+    card.append(info, actions);
+    container.appendChild(card);
+  });
+}
+
+function openGoalEditModal(goal) {
+  const isNew = !goal;
+  const projects = getActiveProjects();
+  const data = goal || {
+    id: generateId(),
+    projectId: (projects.find((project) => project.id !== UNCATEGORIZED_PROJECT_ID) || projects[0] || {}).id || UNCATEGORIZED_PROJECT_ID,
+    title: '',
+    targetPomodoros: 20,
+    startDate: today(),
+    deadline: '',
+    status: 'active',
+    createdAt: new Date().toISOString()
+  };
+
+  const projectOptions = projects.map((project) => {
+    const selected = project.id === data.projectId ? ' selected' : '';
+    return `<option value="${escapeHtml(project.id)}"${selected}>${escapeHtml(project.icon || '')} ${escapeHtml(project.name)}</option>`;
+  }).join('');
+
+  const modal = openModal(`
+    <h2 class="modal__title">${isNew ? '新建目标' : '编辑目标'}</h2>
+    <div class="modal__body">
+      <form id="goal-edit-form">
+        <div class="field">
+          <label class="field__label" for="goal-edit-project">项目</label>
+          <select id="goal-edit-project" class="field__input">${projectOptions}</select>
+        </div>
+        <div class="field">
+          <label class="field__label" for="goal-edit-title">目标标题</label>
+          <input id="goal-edit-title" class="field__input" type="text" maxlength="40" placeholder="例如：本月读完 3 本书" value="${escapeHtml(data.title)}">
+        </div>
+        <div class="field">
+          <label class="field__label" for="goal-edit-target">目标番茄数</label>
+          <input id="goal-edit-target" class="field__input" type="number" min="1" max="999" inputmode="numeric" value="${Number(data.targetPomodoros) || 20}">
+        </div>
+        <div class="field">
+          <label class="field__label" for="goal-edit-deadline">截止日期（可选）</label>
+          <input id="goal-edit-deadline" class="field__input" type="date" value="${escapeHtml(data.deadline || '')}">
+        </div>
+        <div id="goal-edit-error" class="modal__error" hidden></div>
+        <div class="modal__actions">
+          <button id="goal-edit-cancel" class="btn btn--ghost" type="button">取消</button>
+          <button class="btn btn--primary" type="submit">保存</button>
+        </div>
+      </form>
+    </div>
+  `);
+
+  const form = modal.querySelector('#goal-edit-form');
+  const projectSelect = modal.querySelector('#goal-edit-project');
+  const titleInput = modal.querySelector('#goal-edit-title');
+  const targetInput = modal.querySelector('#goal-edit-target');
+  const deadlineInput = modal.querySelector('#goal-edit-deadline');
+  const error = modal.querySelector('#goal-edit-error');
+
+  modal.querySelector('#goal-edit-cancel')?.addEventListener('click', closeActiveModal);
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const title = titleInput.value.trim();
+    const target = Number(targetInput.value);
+
+    if (!title) {
+      error.textContent = '请填写目标标题。';
+      error.hidden = false;
+      return;
+    }
+
+    if (!target || target < 1) {
+      error.textContent = '目标番茄数需大于 0。';
+      error.hidden = false;
+      return;
+    }
+
+    const patch = {
+      projectId: projectSelect.value,
+      title,
+      targetPomodoros: target,
+      deadline: deadlineInput.value || ''
+    };
+
+    if (isNew) {
+      addGoal({ ...data, ...patch });
+    } else {
+      updateGoal(data.id, patch);
+    }
+
+    closeActiveModal();
+    renderGoals();
+    showToast(isNew ? '目标已创建' : '目标已更新');
+  });
+
+  titleInput.focus();
 }
 
 function createReminderActionChip(label, action, reminderId) {
@@ -1960,6 +2655,13 @@ function createCoachReminderCard(reminder, section) {
   header.append(content, status);
   article.append(header, meta);
 
+  if (reminder.feedbackReason) {
+    const reason = document.createElement('div');
+    reason.className = 'coach-reminder-card__reason';
+    reason.textContent = `我的原因：${reminder.feedbackReason}`;
+    article.appendChild(reason);
+  }
+
   if (actions.childElementCount) {
     article.appendChild(actions);
   }
@@ -2052,6 +2754,25 @@ function getToneDescription(tone) {
   return '温和鼓励';
 }
 
+// 厚人设 + 示范例句，让三种语气读起来截然不同，真正"打动人"
+function getTonePersona(tone) {
+  if (tone === 'sharp') {
+    return `【你的人设：犀利直接的教练】
+你像一个不留情面但真心想让他变强的老教练。短句、直给、不说安慰剂，敢点破他在回避的问题。可以扎心，但扎的是问题不是人。不写客套话、不喊口号。
+示范语气：「3 个番茄有 2 个被微信打断——你不是没时间，是没关手机。」「这条建议你搁置第 4 天了，要么今天做，要么承认它对你没用。」`;
+  }
+
+  if (tone === 'funny') {
+    return `【你的人设：逗比但走心的教练】
+你像一个爱开玩笑的朋友，用比喻、自嘲和调侃把道理讲进去。轻松但不油腻，玩笑之后总有一句戳中要害。
+示范语气：「今天的专注力像 WiFi 信号，飘忽得很——不过下午那格满格的时段，建议你以后都拿来打硬仗。」「目标进度 30%，deadline 在招手，它不急，你该急了 😏」`;
+  }
+
+  return `【你的人设：温和鼓励的教练】
+你像一个耐心、共情的伙伴。先接住他的情绪和努力（"我看到你今天…"），再温和地给方向。不居高临下、不说教，让他感到被理解、有力量继续。
+示范语气：「今天状态不在线也没关系，你还是坐下来完成了 2 个番茄，这本身就值得肯定。」「昨天你说想早点收工，今天真的做到了——这种小小的兑现很珍贵。」`;
+}
+
 function getAchievementLabel(achievement) {
   if (achievement === 'full') {
     return '完全达成';
@@ -2072,8 +2793,126 @@ function buildRecordContextLine(record) {
   const interruptionText = record.interrupted
     ? `是${record.interruptionNote ? `（${record.interruptionNote}）` : ''}`
     : '否';
+  const project = getProjectById(record.projectId);
+  const projectText = project ? project.name : '未分类';
+  const energyText = record.energy ? `${record.energy}/5` : '未记录';
 
-  return `- ${record.date} ${record.startTime}-${record.endTime} | 目标：${record.goal} | 达成：${getAchievementLabel(record.achievement)} | 质量：${record.quality}/5 | 被打断：${interruptionText} | 总结：${record.summary}`;
+  return `- ${record.date} ${record.startTime}-${record.endTime} | 项目：${projectText} | 目标：${record.goal} | 达成：${getAchievementLabel(record.achievement)} | 质量：${record.quality}/5 | 精力：${energyText} | 被打断：${interruptionText} | 总结：${record.summary}`;
+}
+
+// 汇总近几天的具体总结文本，让教练能"连点成线"看到跨天规律
+function buildRecentSummariesContext(days = 4) {
+  const lines = [];
+
+  for (let index = 1; index <= days; index += 1) {
+    const dateKey = formatDateValue(new Date(Date.now() - index * 86400000));
+    const dayRecords = getRecordsByDate(dateKey);
+
+    if (!dayRecords.length) {
+      continue;
+    }
+
+    const summaries = dayRecords
+      .map((record) => record.summary)
+      .filter(Boolean)
+      .slice(0, 4)
+      .join('；');
+    lines.push(`- ${dateKey}（${dayRecords.length}个）：${summaries || '无总结'}`);
+  }
+
+  if (!lines.length) {
+    return '';
+  }
+
+  return `【近${days}天每日总结原文】\n${lines.join('\n')}`;
+}
+
+// 汇总近几天用户亲述的自我评价日记，供教练做跨天对比
+function buildRecentJournalsContext(days = 5) {
+  const lines = [];
+
+  for (let index = 1; index <= days; index += 1) {
+    const dateKey = formatDateValue(new Date(Date.now() - index * 86400000));
+    const journal = getJournal(dateKey);
+
+    if (journal) {
+      lines.push(`- ${dateKey}：${journal}`);
+    }
+  }
+
+  if (!lines.length) {
+    return '';
+  }
+
+  return `【近${days}天自我评价日记原文】（用户亲述，请据此发现跨天的情绪/状态变化与反复出现的问题）\n${lines.join('\n')}`;
+}
+
+// 汇总当前活跃目标与进度，供教练依据目标给出计划/调整建议
+function buildGoalsContext() {
+  const goals = getGoals().filter((goal) => goal.status !== 'paused');
+
+  if (!goals.length) {
+    return '';
+  }
+
+  const lines = ['【当前目标与进度】'];
+  goals.forEach((goal) => {
+    const progress = getGoalProgress(goal);
+    const project = getProjectById(goal.projectId);
+    const deadlineHint = getGoalDeadlineHint(goal, progress);
+    lines.push(`- [${project ? project.name : '未分类'}] ${goal.title}：${progress.done}/${progress.target} 个（${progress.percent}%）${deadlineHint ? `，${deadlineHint}` : ''}`);
+  });
+
+  return lines.join('\n');
+}
+
+// 汇总最近被用户勾选"已践行"的建议，形成反馈闭环
+function buildPracticedFeedbackContext() {
+  const recentDates = new Set();
+  for (let index = 0; index <= 2; index += 1) {
+    recentDates.add(formatDateValue(new Date(Date.now() - index * 86400000)));
+  }
+
+  const practiced = getReminders().filter((reminder) => {
+    return reminder.practicedDate && recentDates.has(reminder.practicedDate);
+  });
+
+  if (!practiced.length) {
+    return '';
+  }
+
+  const lines = ['【用户近期已践行的建议】（请在报告中先认可这些进展）'];
+  practiced.forEach((reminder) => {
+    lines.push(`- ${reminder.content}（${reminder.practicedDate}）`);
+  });
+
+  return lines.join('\n');
+}
+
+// 汇总用户主动搁置/否决的建议及原因，让教练避免重复无效建议、据原因调整方向
+function buildDismissedFeedbackContext() {
+  const dismissed = getReminders().filter((reminder) => {
+    return reminder.status === 'ignored' || reminder.status === 'deferred';
+  });
+
+  if (!dismissed.length) {
+    return '';
+  }
+
+  // 优先展示带原因的，最多 6 条
+  const sorted = dismissed
+    .slice()
+    .sort((left, right) => (right.feedbackReason ? 1 : 0) - (left.feedbackReason ? 1 : 0))
+    .slice(0, 6);
+
+  const lines = ['【用户已否决/搁置的建议及原因】（重要：不要再提用户判定"无用"的同类建议；据这些原因调整建议的方向和时机）'];
+  sorted.forEach((reminder) => {
+    const label = reminder.status === 'ignored' ? '判为无用' : '暂缓';
+    const reason = reminder.feedbackReason ? `，原因：${reminder.feedbackReason}` : '（未填原因）';
+    lines.push(`- [${label}] ${reminder.content}${reason}`);
+  });
+
+  return lines.join('\n');
 }
 
 function buildHistoricalContext() {
@@ -2087,7 +2926,8 @@ function buildHistoricalContext() {
   const historicalRecords = allRecords.filter((record) => dateKeys.includes(record.date));
 
   if (!historicalRecords.length) {
-    return '';
+    // 即使没有近7天数据，也把目标与提醒反馈背景带上
+    return [buildGoalsContext(), buildDismissedFeedbackContext()].filter(Boolean).join('\n\n');
   }
 
   const daysWithRecords = dateKeys.filter((dateKey) => {
@@ -2126,13 +2966,38 @@ function buildHistoricalContext() {
     lines.push(`- 今日趋势：${trendText}`);
   }
 
+  // 按项目统计近7天投入分布
+  const projectCounts = {};
+  historicalRecords.forEach((record) => {
+    const project = getProjectById(record.projectId);
+    const name = project ? project.name : '未分类';
+    projectCounts[name] = (projectCounts[name] || 0) + 1;
+  });
+  const distribution = Object.entries(projectCounts)
+    .sort((left, right) => right[1] - left[1])
+    .map(([name, count]) => `${name} ${count}个`)
+    .join('、');
+  if (distribution) {
+    lines.push(`- 近7天项目投入：${distribution}`);
+  }
+
   const activeReminders = getActiveReminders().slice(0, 3);
   lines.push(`- 活跃待改进项（${activeReminders.length}条）：`);
   activeReminders.forEach((reminder, index) => {
     lines.push(`  ${index + 1}. ${reminder.content}（已关注 ${getReminderDayCount(reminder)} 使用日）`);
   });
 
-  return lines.join('\n');
+  const sections = [lines.join('\n')];
+  const recentSummaries = buildRecentSummariesContext();
+  if (recentSummaries) sections.push(recentSummaries);
+  const goalsContext = buildGoalsContext();
+  if (goalsContext) sections.push(goalsContext);
+  const practicedFeedback = buildPracticedFeedbackContext();
+  if (practicedFeedback) sections.push(practicedFeedback);
+  const dismissedFeedback = buildDismissedFeedbackContext();
+  if (dismissedFeedback) sections.push(dismissedFeedback);
+
+  return sections.join('\n\n');
 }
 
 function renderRecordPreview(container, records, emptyText) {
@@ -2171,6 +3036,11 @@ function renderDailySummaryPreview() {
   const records = sortRecordsByStartTimeDesc(getRecordsByDate(today()));
   DOM.dailySummaryCount.textContent = `今日 ${records.length} 个番茄`;
   renderRecordPreview(DOM.dailySummaryPreview, records, '今天还没有番茄记录，先完成一个再来复盘。');
+
+  // 回填当天已保存的自我评价日记（若用户尚未在框内编辑）
+  if (DOM.dailySelfNote && document.activeElement !== DOM.dailySelfNote) {
+    DOM.dailySelfNote.value = getJournal(today());
+  }
 }
 
 function renderInlineMarkdown(text) {
@@ -2245,7 +3115,7 @@ function renderReportHistory(type) {
     header.setAttribute('role', 'button');
     header.textContent = type === 'daily'
       ? formatDateCN(report.dateKey)
-      : `${String(report.dateKey || '').replace('_', ' 至 ')} · ${report.recordCount} 个番茄`;
+      : `${String(report.dateKey || '').replace('_', ' 至 ')} · ${report.recordCount} 个番茄${report.auto ? ' · 自动' : ''}`;
     content.className = 'report-history__item-content';
     content.hidden = true;
     content.innerHTML = renderMarkdownLite(report.content);
@@ -2300,6 +3170,13 @@ function renderChatHistory() {
   }
 
   APP_STATE.coachChatHistory.forEach((message) => {
+    if (message.hint) {
+      const hint = document.createElement('div');
+      hint.className = 'chat-hint';
+      hint.textContent = message.hint;
+      DOM.chatHistory.appendChild(hint);
+    }
+
     const bubble = document.createElement('article');
     bubble.className = `chat-bubble chat-bubble--${message.role === 'user' ? 'user' : 'assistant'}`;
 
@@ -2404,11 +3281,12 @@ function showToast(message, type = 'success') {
   }, 3200);
 }
 
-async function callLLM(systemPrompt, userMessage) {
+async function callLLM(systemPrompt, userMessage, options = {}) {
   const settings = getSettings();
   const apiKey = (settings.apiKey || '').trim();
   const apiBase = (settings.apiBase || DEFAULT_SETTINGS.apiBase).replace(/\/$/, '');
   const model = settings.model || DEFAULT_SETTINGS.model;
+  const timeoutMs = Number(options.timeoutMs) || 30000;
 
   if (!apiKey) {
     const message = '未配置 API Key，请先到设置页配置。';
@@ -2420,7 +3298,7 @@ async function callLLM(systemPrompt, userMessage) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => {
     controller.abort();
-  }, 30000);
+  }, timeoutMs);
 
   try {
     clearCoachFeedback();
@@ -2437,7 +3315,7 @@ async function callLLM(systemPrompt, userMessage) {
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage }
         ],
-        temperature: 0.7
+        temperature: Number.isFinite(options.temperature) ? options.temperature : 0.7
       }),
       signal: controller.signal
     });
@@ -2468,9 +3346,11 @@ async function callLLM(systemPrompt, userMessage) {
       showToast('网络波动，正在重试…', 'info');
       await new Promise((resolve) => window.setTimeout(resolve, 1500));
       callLLM._retrying = false;
-      return callLLM(systemPrompt, userMessage);
+      return callLLM(systemPrompt, userMessage, options);
     }
     callLLM._retrying = false;
+
+    console.error('[callLLM] 调用失败：', error);
 
     let message;
     if (error?.name === 'AbortError') {
@@ -2577,89 +3457,231 @@ function buildDailySummarySystemPrompt(records = []) {
     ? '\n\n【情绪感知提示】今日质量均分偏低，请以共情和认可开场（先肯定用户坚持记录的行为），再温和提出改进建议，不要强化挫败感。'
     : '';
 
-  return `你是番茄教练，语气${getToneDescription(getSettings().coachTone)}。用户给你今日的番茄工作记录，请生成教练式日报，包含：
-1. 🌟 高光时刻（最好的番茄/成就）
-2. 📉 低谷时刻（最差的/被打断的）
-3. 🔍 今日模式（工作节奏/情绪词汇/规律）
-4. 💡 明日行动建议（具体可操作，2-3条）
-5. 🎯 待改进项（格式严格为：【待改进】条目内容，每条一行，最多3条）
+  return `你是用户的私人番茄教练。${getTonePersona(getSettings().coachTone)}
 
-语气说明：gentle=温和鼓励, sharp=犀利直接, funny=轻松幽默
+你的目标不是写格式化报告，而是像真正懂他的教练那样说到他心里去、并推动他明天更好。
 
-【重要约束】每条【待改进】建议必须：①可在单次番茄中直接执行 ②能被清晰验证是否做到 ③不超过25字。禁止输出"保持专注"等无法验证的模糊建议。若背景数据中有活跃待改进项，优先评估其进展而非新增。${empathyNote}`;
+【怎么写】
+- 你自己判断今天最该聊什么，从下面这份"可聊清单"里挑**真正有价值的**来写，不必面面俱到、不要为凑齐而硬写：
+  · 回应他今天的自我评价（如果他写了，优先回应，像对话）
+  · 一个基于跨天对比的真实洞察（引用具体哪天、哪条数据/感受）
+  · 承接昨天：认可已践行的建议、评估老问题今天有没有改善
+  · 目标推进：落后就直说、给追赶节奏
+  · 明日一个最小且可验证的具体动作
+- **按情境决定篇幅**：番茄少、平淡的一天，两三句就够，别硬撑；有明显转折、情绪波动或目标偏差的一天，才展开细说。
+- 可以用极少量小标题或直接写成几段话/一小段"给他的话"，怎么自然怎么来。别每天都长一个样。
+- 具体、走心或扎心（取决于人设），不凑字数、不喊口号。宁可短，也不要正确的废话。
+
+【结尾的机器块（重要格式）】
+如果——且仅当——今天确实存在值得改进、可执行、可验证的点，就在**回复的最末尾**另起一段，用如下格式列出（最多 2 条，每条≤25字，能在单次番茄内执行并清晰验证；禁止"保持专注"这类空话；老的活跃待改进项若仍未解决，优先复用不新增）：
+【待改进】具体条目
+如果今天没有值得新增的，就**不要输出任何【待改进】行**。${empathyNote}`;
 }
 
-function buildDailySummaryUserMessage(records) {
+function buildDailySummaryUserMessage(records, selfNote = '') {
   const lines = records.length
     ? records.map((record) => buildRecordContextLine(record)).join('\n')
     : '- 今天还没有任何番茄记录，请根据空记录给出轻量复盘。';
 
+  const selfNoteBlock = selfNote
+    ? `\n\n【今日自我评价】（用户亲述，请优先据此回应他的真实感受）\n${selfNote}`
+    : '';
+
   const originalContent = `日期：${today()}
 今日番茄数：${records.length}
 今日记录：
-${lines}`;
+${lines}${selfNoteBlock}`;
   const ctx = buildHistoricalContext();
+  const journalCtx = buildRecentJournalsContext();
+  const prevReportsCtx = buildPreviousDailyReportsContext();
 
-  return `${originalContent}${ctx ? `\n\n${ctx}` : ''}`;
+  return `${originalContent}${prevReportsCtx ? `\n\n${prevReportsCtx}` : ''}${journalCtx ? `\n\n${journalCtx}` : ''}${ctx ? `\n\n${ctx}` : ''}`;
 }
 
 function buildWeeklyReportSystemPrompt() {
-  return `你是番茄教练，语气${getToneDescription(getSettings().coachTone)}。用户给你一段时间的番茄记录，请生成教练式周报，包含：
-1. ⏰ 黄金时段分析（什么时候最稳、最有产出）
-2. 🧮 任务性价比（哪些任务最值得继续投入）
-3. 🚧 打断模式（最常见的打断来源和代价）
-4. 📌 下周行动建议（具体可执行，2-3条）
-5. 🎯 一句总评（点出这周最该盯住的核心模式）
+  return `你是用户的私人番茄教练。${getTonePersona(getSettings().coachTone)}
 
-若背景数据中有超过7天未改善的活跃待改进项，请在行动建议中明确指出是否考虑重新审视该项的有效性。`;
+用户给你一段时间的番茄记录，请生成一份教练式周报。基于真实数据、引用具体项目/时段/感受，避免空话套话。下面是可以覆盖的话题，**按这段时间真正值得说的来取舍，不适用的可跳过或合并，不要为凑齐硬写**：
+- ⏰ 黄金时段与精力：什么时段、什么精力状态下最有产出
+- 🧮 项目性价比：哪些项目最值得继续、哪些在消耗时间
+- 🚧 打断模式：最常见的打断来源和代价
+- 🎯 目标推进：结合目标进度评估是否在正轨；落后的给出明确追赶计划（每周/每天需几个番茄）
+- 📌 下周计划：2-3 条具体、可执行、和上面结论直接挂钩的行动
+- 一句总评：点出这段时间最该盯住的核心模式
+
+若背景数据中有超过 7 天未改善的活跃待改进项，请明确指出是否该重新审视它。写得像人话、有重点，别像流水账。`;
 }
 
 function buildWeeklyReportUserMessage(startDate, endDate, records) {
-  const lines = records.length
-    ? records.map((record) => buildRecordContextLine(record)).join('\n')
-    : '- 这个时间范围内没有番茄记录，请基于空记录给出保守结论。';
+  const MAX_DETAIL = 60; // 明细超过此数量则改为聚合+采样，避免请求过大导致超时/超上下文
+  let detailBlock;
+
+  if (!records.length) {
+    detailBlock = '- 这个时间范围内没有番茄记录，请基于空记录给出保守结论。';
+  } else if (records.length <= MAX_DETAIL) {
+    detailBlock = records.map((record) => buildRecordContextLine(record)).join('\n');
+  } else {
+    // 记录太多：给出按项目/达成/打断的聚合统计 + 最近的采样明细
+    detailBlock = `${buildRecordsAggregateSummary(records)}\n\n（记录较多，仅附最近 ${MAX_DETAIL} 条明细供参考）\n${records.slice(0, MAX_DETAIL).map((record) => buildRecordContextLine(record)).join('\n')}`;
+  }
 
   const originalContent = `统计范围：${startDate} 至 ${endDate}
 番茄总数：${records.length}
 记录明细：
-${lines}`;
+${detailBlock}`;
   const ctx = buildHistoricalContext();
+  const priorWeeks = buildPriorWeeksStatsContext(startDate);
+  const priorReports = buildPreviousWeeklyReportsContext();
+  const comparisonBlocks = [priorWeeks, priorReports].filter(Boolean).join('\n\n');
 
-  return `${originalContent}${ctx ? `\n\n${ctx}` : ''}`;
+  return `${originalContent}${comparisonBlocks ? `\n\n${comparisonBlocks}` : ''}${ctx ? `\n\n${ctx}` : ''}`;
+}
+
+// 记录聚合统计：项目分布 / 达成率 / 打断次数 / 平均质量与精力
+function buildRecordsAggregateSummary(records) {
+  const projectCounts = {};
+  let fullCount = 0;
+  let interruptedCount = 0;
+  const qualityValues = [];
+  const energyValues = [];
+
+  records.forEach((record) => {
+    const project = getProjectById(record.projectId);
+    const name = project ? project.name : '未分类';
+    projectCounts[name] = (projectCounts[name] || 0) + 1;
+
+    if (record.achievement === 'full') fullCount += 1;
+    if (record.interrupted) interruptedCount += 1;
+
+    const quality = Number(record.quality);
+    if (Number.isFinite(quality)) qualityValues.push(quality);
+    const energy = Number(record.energy);
+    if (Number.isFinite(energy) && energy > 0) energyValues.push(energy);
+  });
+
+  const avg = (arr) => (arr.length ? (arr.reduce((sum, value) => sum + value, 0) / arr.length).toFixed(1) : '—');
+  const distribution = Object.entries(projectCounts)
+    .sort((left, right) => right[1] - left[1])
+    .map(([name, count]) => `${name} ${count}个`)
+    .join('、');
+
+  return [
+    '【聚合统计】',
+    `- 项目分布：${distribution}`,
+    `- 完全达成：${fullCount}/${records.length}`,
+    `- 被打断：${interruptedCount} 次`,
+    `- 平均质量：${avg(qualityValues)}/5，平均精力：${avg(energyValues)}/5`
+  ].join('\n');
+}
+
+// 统计本周之前 2 周的完成数据，供周报做纵向对比
+function buildPriorWeeksStatsContext(currentStartDate) {
+  const msPerDay = 86400000;
+  const currentStart = new Date(`${currentStartDate}T00:00:00`).getTime();
+
+  if (Number.isNaN(currentStart)) {
+    return '';
+  }
+
+  const lines = [];
+
+  for (let weekAgo = 1; weekAgo <= 2; weekAgo += 1) {
+    const end = new Date(currentStart - (7 * (weekAgo - 1) + 1) * msPerDay);
+    const start = new Date(currentStart - 7 * weekAgo * msPerDay);
+    const startKey = formatDateValue(start);
+    const endKey = formatDateValue(end);
+    const weekRecords = getRecordsByDateRange(startKey, endKey);
+
+    if (!weekRecords.length) {
+      continue;
+    }
+
+    const qualityValues = weekRecords.map((record) => Number(record.quality)).filter((value) => Number.isFinite(value));
+    const avgQuality = qualityValues.length
+      ? (qualityValues.reduce((sum, value) => sum + value, 0) / qualityValues.length).toFixed(1)
+      : '—';
+    const interrupted = weekRecords.filter((record) => record.interrupted).length;
+    lines.push(`- ${startKey} 至 ${endKey}：${weekRecords.length} 个番茄，均质 ${avgQuality}/5，被打断 ${interrupted} 次`);
+  }
+
+  if (!lines.length) {
+    return '';
+  }
+
+  return `【前两周完成数据】（请与本段时间做对比，指出是进步还是退步）\n${lines.join('\n')}`;
+}
+
+// 取最近 2 篇周报原文，供本次周报与历史对比
+function buildPreviousWeeklyReportsContext() {
+  const weeklyReports = getReports()
+    .filter((report) => report.type === 'weekly')
+    .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
+    .slice(0, 2);
+
+  if (!weeklyReports.length) {
+    return '';
+  }
+
+  const lines = ['【最近的历史周总结原文】（请对比上次周总结：老问题是否仍在、是否兑现了上次的计划）'];
+  weeklyReports.forEach((report) => {
+    const label = String(report.dateKey || '').replace('_', ' 至 ');
+    lines.push(`— 周报（${label}）——\n${report.content}`);
+  });
+
+  return lines.join('\n');
+}
+
+// 取最近 1-2 篇日报原文，让教练避免重复自己说过的话、形成连续对话感
+function buildPreviousDailyReportsContext() {
+  const dailyReports = getReports()
+    .filter((report) => report.type === 'daily' && report.dateKey !== today())
+    .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
+    .slice(0, 2);
+
+  if (!dailyReports.length) {
+    return '';
+  }
+
+  const lines = ['【你最近写给他的日报原文】（别重复这些话和建议；今天若和昨天类似，就直说"节奏和昨天差不多"，不要硬造新洞察）'];
+  dailyReports.forEach((report) => {
+    lines.push(`— ${formatDateCN(report.dateKey)} 的日报 ——\n${report.content}`);
+  });
+
+  return lines.join('\n');
 }
 
 function buildCoachChatSystemPrompt() {
-  return `你是番茄教练，语气${getToneDescription(getSettings().coachTone)}。请基于用户提供的番茄记录上下文和对话历史回答问题。回答要具体、可执行，尽量指出规律；如果上下文不足，直接说明。`;
+  return `你是用户的私人番茄教练。${getTonePersona(getSettings().coachTone)}
+
+请基于用户提供的番茄记录上下文、目标进度和对话历史回答问题。回答要具体、可执行，引用上下文里的具体项目/精力/打断/目标数据来支撑观点，保持你的人设口吻。如果上下文不足，直接说明并提出你可以帮他分析的方向。`;
 }
 
-function buildCoachChatUserMessage(history, question) {
-  const todayRecords = sortRecordsByStartTimeDesc(getRecordsByDate(today()));
-  const weekRange = getCurrentWeekRange();
-  const contextRecords = todayRecords.length ? todayRecords : getRecordsByDateRange(weekRange.startDate, weekRange.endDate);
-  const limitedRecords = contextRecords.slice(0, 20);
-  const contextTitle = todayRecords.length
-    ? `今日番茄记录（${today()}）`
-    : `本周番茄记录（${weekRange.startDate} 至 ${weekRange.endDate}）`;
-  const contextLines = limitedRecords.length
-    ? limitedRecords.map((record) => buildRecordContextLine(record)).join('\n')
-    : '- 当前没有可用的番茄记录。';
+function buildCoachChatUserMessage(history, question, range) {
+  const rangeRecords = getRecordsByDateRange(range.startDate, range.endDate); // 已按时间倒序
+  const MAX_DETAIL = 40;
+  let detailBlock;
+
+  if (!rangeRecords.length) {
+    detailBlock = '- 该时间段没有番茄记录。';
+  } else if (rangeRecords.length <= MAX_DETAIL) {
+    detailBlock = rangeRecords.map((record) => buildRecordContextLine(record)).join('\n');
+  } else {
+    detailBlock = `${buildRecordsAggregateSummary(rangeRecords)}\n\n（记录较多，仅附最近 ${MAX_DETAIL} 条明细供参考）\n${rangeRecords.slice(0, MAX_DETAIL).map((record) => buildRecordContextLine(record)).join('\n')}`;
+  }
+
+  const contextTitle = `分析范围：${range.label}（${range.startDate} 至 ${range.endDate}），共 ${rangeRecords.length} 个番茄`;
   const historyLines = history.length
     ? history.slice(-12).map((item) => `${item.role === 'user' ? '用户' : '教练'}：${item.content}`).join('\n')
     : '无';
-  const truncationNotes = [];
 
-  if (contextRecords.length > 20) {
-    truncationNotes.push('（已截取最近 20 条记录作为上下文）');
-  }
+  // 与范围无关但有用的记忆：目标、已否决/已践行的建议反馈
+  const extraContexts = [buildGoalsContext(), buildDismissedFeedbackContext(), buildPracticedFeedbackContext()].filter(Boolean);
+  const extraContext = extraContexts.length ? `\n\n${extraContexts.join('\n\n')}` : '';
 
-  if (history.length > 12) {
-    truncationNotes.push('（对话历史已截断至最近 6 轮）');
-  }
-
-  const truncationText = truncationNotes.length ? `${truncationNotes.join('\n')}\n\n` : '';
+  const truncationText = history.length > 12 ? '（对话历史已截断至最近 6 轮）\n\n' : '';
 
   return `${contextTitle}：
-${contextLines}
+${detailBlock}${extraContext}
 
 历史对话：
 ${historyLines}
@@ -2668,15 +3690,201 @@ ${truncationText}当前问题：
 ${question}`;
 }
 
+// 把中文/阿拉伯数字（1..99，含"两""几"）解析为整数，失败返回 NaN
+function parseFlexibleInt(token) {
+  const raw = String(token || '').trim();
+
+  if (/^\d+$/.test(raw)) {
+    return parseInt(raw, 10);
+  }
+
+  if (raw === '几') {
+    return 3;
+  }
+
+  const digits = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+
+  if (raw === '十') {
+    return 10;
+  }
+
+  if (raw.includes('十')) {
+    const [left, right] = raw.split('十');
+    const tens = left === '' ? 1 : digits[left];
+    const ones = right === '' ? 0 : digits[right];
+
+    if (tens === undefined || ones === undefined) {
+      return NaN;
+    }
+
+    return tens * 10 + ones;
+  }
+
+  return raw in digits ? digits[raw] : NaN;
+}
+
+// 从提问文本解析时间范围，返回 { startDate, endDate, label } 或 null
+function parseQuestionDateRange(question) {
+  const text = String(question || '');
+  const todayStr = today();
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const num = '([\\d一二两三四五六七八九十几]+)';
+  const clampEnd = (dateStr) => (dateStr > todayStr ? todayStr : dateStr);
+  const daysAgo = (n) => formatDateValue(new Date(now.getTime() - (n - 1) * 86400000));
+  const range = (startStr, endStr, label) => ({ startDate: startStr, endDate: clampEnd(endStr), label });
+
+  try {
+    // 全部 / 至今
+    if (/(全部|所有|一直以来|所有时间|历史(记录)?|至今|以来的?全部)/.test(text) && !/最近|近|过去/.test(text)) {
+      const records = getRecords();
+      const earliest = records.reduce((min, record) => (record.date && record.date < min ? record.date : min), todayStr);
+      return range(earliest, todayStr, '全部');
+    }
+
+    if (/今天|今日/.test(text)) return range(todayStr, todayStr, '今天');
+    if (/昨天|昨日/.test(text)) return range(daysAgo(2), daysAgo(2), '昨天');
+    if (/(上周|上一周|上个星期|上星期)/.test(text)) {
+      const r = getPreviousWeekRange();
+      return range(r.startDate, r.endDate, '上周');
+    }
+    if (/(本周|这周|这一周|本星期|这星期)/.test(text)) {
+      const r = getCurrentWeekRange();
+      return range(r.startDate, r.endDate, '本周');
+    }
+
+    // 最近N个月 / 一个月
+    let m = text.match(new RegExp(`(?:最近|近|过去|这)?\\s*${num}\\s*个月`));
+    if (m) {
+      const n = parseFlexibleInt(m[1]);
+      if (Number.isFinite(n) && n > 0) return range(daysAgo(n * 30), todayStr, `最近${n}个月`);
+    }
+
+    // 半年（需带"最近/近/过去"前缀，避免误吞"上半年/下半年"）
+    if (/(最近|近|过去|这)\s*半年/.test(text)) return range(daysAgo(180), todayStr, '近半年');
+
+    // 最近N周
+    m = text.match(new RegExp(`(?:最近|近|过去|这)?\\s*${num}\\s*(?:周|个星期|星期)`));
+    if (m) {
+      const n = parseFlexibleInt(m[1]);
+      if (Number.isFinite(n) && n > 0) return range(daysAgo(n * 7), todayStr, `最近${n}周`);
+    }
+
+    // 最近N天 / 这几天
+    m = text.match(new RegExp(`(?:最近|近|过去|这)\\s*${num}\\s*(?:天|日)`));
+    if (m) {
+      const n = parseFlexibleInt(m[1]);
+      if (Number.isFinite(n) && n > 0) return range(daysAgo(n), todayStr, `最近${n}天`);
+    }
+
+    // 上个月
+    if (/(上个月|上一个月|上月)/.test(text)) {
+      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const end = new Date(now.getFullYear(), now.getMonth(), 0);
+      return range(formatDateValue(start), formatDateValue(end), '上个月');
+    }
+    // 本月
+    if (/(本月|这个月|这一个月|本月份)/.test(text)) {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      return range(formatDateValue(start), todayStr, '本月');
+    }
+
+    // 季度
+    const quarterRange = (offset) => {
+      let q = Math.floor(now.getMonth() / 3) + offset;
+      let year = now.getFullYear();
+      while (q < 0) { q += 4; year -= 1; }
+      const startMonth = q * 3;
+      const start = new Date(year, startMonth, 1);
+      const end = new Date(year, startMonth + 3, 0);
+      return { start, end };
+    };
+    if (/(上个季度|上一季度|上季度)/.test(text)) {
+      const r = quarterRange(-1);
+      return range(formatDateValue(r.start), formatDateValue(r.end), '上季度');
+    }
+    if (/(本季度|这个季度|这一季度)/.test(text) || /(最近|近|过去)\s*(?:一个|1个)?季度/.test(text)) {
+      const r = quarterRange(0);
+      return range(formatDateValue(r.start), todayStr, '本季度');
+    }
+    if (/最近三个月|近三个月|过去三个月/.test(text)) {
+      return range(daysAgo(90), todayStr, '最近三个月');
+    }
+
+    // 上/下半年
+    if (/上半年/.test(text)) {
+      const start = new Date(now.getFullYear(), 0, 1);
+      const end = new Date(now.getFullYear(), 5, 30);
+      return range(formatDateValue(start), formatDateValue(end), '上半年');
+    }
+    if (/下半年/.test(text)) {
+      const start = new Date(now.getFullYear(), 6, 1);
+      const end = new Date(now.getFullYear(), 11, 31);
+      return range(formatDateValue(start), formatDateValue(end), '下半年');
+    }
+
+    // 去年 / 今年
+    if (/去年/.test(text)) {
+      const y = now.getFullYear() - 1;
+      return range(`${y}-01-01`, `${y}-12-31`, '去年');
+    }
+    if (/(今年|本年|今年以来)/.test(text)) {
+      return range(`${now.getFullYear()}-01-01`, todayStr, '今年');
+    }
+
+    // 绝对月份 "X月" / "X月份"（不含"个月"，前面已排除）
+    m = text.match(new RegExp(`${num}\\s*月份?`));
+    if (m) {
+      const month = parseFlexibleInt(m[1]);
+      if (Number.isFinite(month) && month >= 1 && month <= 12) {
+        const currentMonth = now.getMonth() + 1;
+        const year = month <= currentMonth ? now.getFullYear() : now.getFullYear() - 1;
+        const start = new Date(year, month - 1, 1);
+        const end = new Date(year, month, 0);
+        return range(formatDateValue(start), formatDateValue(end), `${month}月`);
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error('[parseQuestionDateRange] 解析失败：', error);
+    return null;
+  }
+}
+
+// 确定自由提问要分析的时间范围：解析到用之，否则默认最近 30 天
+function resolveChatRange(question) {
+  const parsed = parseQuestionDateRange(question);
+
+  if (parsed && parsed.startDate && parsed.endDate) {
+    return { ...parsed, matched: true };
+  }
+
+  const start = formatDateValue(new Date(Date.now() - 29 * 86400000));
+  return { startDate: start, endDate: today(), label: '最近30天', matched: false };
+}
+
 async function handleGenerateDailySummary() {
   if (!DOM.generateDailySummaryBtn) {
     return;
   }
 
+  // 先保存今日自我评价为日记
+  const selfNote = DOM.dailySelfNote ? DOM.dailySelfNote.value.trim() : '';
+  setJournal(today(), selfNote);
+
   const records = sortRecordsByStartTimeDesc(getRecordsByDate(today()));
   setCoachActionLoading(DOM.generateDailySummaryBtn, true);
-  const result = await callLLM(buildDailySummarySystemPrompt(records), buildDailySummaryUserMessage(records));
-  setCoachActionLoading(DOM.generateDailySummaryBtn, false);
+
+  let result = null;
+  try {
+    result = await callLLM(buildDailySummarySystemPrompt(records), buildDailySummaryUserMessage(records, selfNote), { temperature: 0.8 });
+  } catch (error) {
+    console.error('[日报] 生成失败：', error);
+    showCoachFeedback('生成日报时出错，请重试。');
+  } finally {
+    setCoachActionLoading(DOM.generateDailySummaryBtn, false);
+  }
 
   if (!result) {
     return;
@@ -2686,6 +3894,9 @@ async function handleGenerateDailySummary() {
   addReport({ id: generateId(), type: 'daily', dateKey: today(), content: result, createdAt: new Date().toISOString(), recordCount: records.length });
   renderReportHistory('daily');
   extractReminders(result);
+
+  // 到设定的星期几且本周尚未自动生成，则自动附带一次周总结
+  await maybeGenerateAutoWeeklySummary();
 }
 
 async function handleGenerateWeeklyReport() {
@@ -2708,11 +3919,20 @@ async function handleGenerateWeeklyReport() {
 
   const records = getRecordsByDateRange(startDate, endDate);
   setCoachActionLoading(DOM.generateWeeklyReportBtn, true);
-  const result = await callLLM(
-    buildWeeklyReportSystemPrompt(),
-    buildWeeklyReportUserMessage(startDate, endDate, records)
-  );
-  setCoachActionLoading(DOM.generateWeeklyReportBtn, false);
+
+  let result = null;
+  try {
+    result = await callLLM(
+      buildWeeklyReportSystemPrompt(),
+      buildWeeklyReportUserMessage(startDate, endDate, records),
+      { timeoutMs: 60000 }
+    );
+  } catch (error) {
+    console.error('[周报] 生成失败：', error);
+    showCoachFeedback('生成周报时出错，请重试或缩短日期范围。');
+  } finally {
+    setCoachActionLoading(DOM.generateWeeklyReportBtn, false);
+  }
 
   if (!result) {
     return;
@@ -2721,6 +3941,78 @@ async function handleGenerateWeeklyReport() {
   setResultCardContent(DOM.weeklyReportResult, result, '选择日期范围后生成周报。');
   addReport({ id: generateId(), type: 'weekly', dateKey: `${startDate}_${endDate}`, content: result, createdAt: new Date().toISOString(), recordCount: records.length });
   renderReportHistory('weekly');
+}
+
+// 生成今日报告时，若到达设定星期几且本周尚未自动生成，则自动追加一次周总结
+async function maybeGenerateAutoWeeklySummary() {
+  const settings = getSettings();
+
+  if (!settings.autoWeeklySummary) {
+    return;
+  }
+
+  const targetWeekday = Number(settings.weeklySummaryWeekday);
+
+  if (new Date().getDay() !== targetWeekday) {
+    return;
+  }
+
+  const weekRange = getCurrentWeekRange();
+  const weekKey = weekRange.startDate; // 以本周起始日作为去重键
+
+  if (settings.lastAutoWeeklyKey === weekKey) {
+    return; // 本周已自动生成过
+  }
+
+  const records = getRecordsByDateRange(weekRange.startDate, weekRange.endDate);
+
+  if (DOM.dailySummaryResult) {
+    const note = document.createElement('div');
+    note.className = 'auto-weekly-note';
+    note.textContent = '📈 正在生成本周自动周总结…';
+    DOM.dailySummaryResult.after(note);
+    APP_STATE._autoWeeklyNote = note;
+  }
+
+  const result = await callLLM(
+    buildWeeklyReportSystemPrompt(),
+    buildWeeklyReportUserMessage(weekRange.startDate, weekRange.endDate, records),
+    { timeoutMs: 60000 }
+  ).catch((error) => {
+    console.error('[自动周总结] 生成失败：', error);
+    return null;
+  });
+
+  if (!result) {
+    if (APP_STATE._autoWeeklyNote) {
+      APP_STATE._autoWeeklyNote.remove();
+      APP_STATE._autoWeeklyNote = null;
+    }
+    return;
+  }
+
+  addReport({
+    id: generateId(),
+    type: 'weekly',
+    dateKey: `${weekRange.startDate}_${weekRange.endDate}`,
+    content: result,
+    createdAt: new Date().toISOString(),
+    recordCount: records.length,
+    auto: true
+  });
+  saveSettings({ lastAutoWeeklyKey: weekKey });
+  renderReportHistory('weekly');
+
+  if (DOM.weeklyReportResult) {
+    setResultCardContent(DOM.weeklyReportResult, result, '选择日期范围后生成周报。');
+  }
+
+  if (APP_STATE._autoWeeklyNote) {
+    APP_STATE._autoWeeklyNote.textContent = '📈 本周自动周总结已生成，可在下方「周报」标签页查看。';
+    APP_STATE._autoWeeklyNote = null;
+  }
+
+  showToast('📈 已自动生成本周周总结');
 }
 
 async function handleChatSubmit(event) {
@@ -2741,19 +4033,34 @@ async function handleChatSubmit(event) {
   renderChatHistory();
   DOM.chatInput.value = '';
 
+  const range = resolveChatRange(question);
+
   setCoachActionLoading(DOM.sendChatBtn, true);
-  const answer = await callLLM(
-    buildCoachChatSystemPrompt(),
-    buildCoachChatUserMessage(historySnapshot, question)
-  );
-  setCoachActionLoading(DOM.sendChatBtn, false);
+  let answer = null;
+  try {
+    answer = await callLLM(
+      buildCoachChatSystemPrompt(),
+      buildCoachChatUserMessage(historySnapshot, question, range),
+      { temperature: 0.8, timeoutMs: 60000 }
+    );
+  } catch (error) {
+    console.error('[自由提问] 调用失败：', error);
+    showCoachFeedback('提问出错，请重试。');
+  } finally {
+    setCoachActionLoading(DOM.sendChatBtn, false);
+  }
 
   if (!answer) {
     return;
   }
 
-  APP_STATE.coachChatHistory.push({ role: 'assistant', content: answer });
+  const assistantMessage = { role: 'assistant', content: answer };
+  if (range.matched) {
+    assistantMessage.hint = `📊 已按"${range.label}"（${range.startDate} 至 ${range.endDate}）范围分析`;
+  }
+  APP_STATE.coachChatHistory.push(assistantMessage);
   renderChatHistory();
+  addChatEntry(question, answer);
 }
 
 function renderCoachPage() {
@@ -2816,11 +4123,174 @@ function initSettingsPage() {
   }
   renderSyncStatus();
 
+  renderProjectManager();
+  renderCoachSettings();
+
   const versionEl = document.getElementById('settings-version-display');
   if (versionEl) {
     const swVer = typeof VERSION !== 'undefined' ? VERSION : '?'; // sw.js 中的 VERSION 不在同一作用域，如需显示 SW 版本，在 SW_UPDATED 消息处理中更新
     versionEl.textContent = `当前版本：${BUILD_DATE}`;
   }
+}
+
+function renderCoachSettings() {
+  const toggle = document.getElementById('settings-auto-weekly-toggle');
+  const settings = getSettings();
+
+  if (toggle) {
+    const isOn = Boolean(settings.autoWeeklySummary);
+    toggle.textContent = isOn ? '开' : '关';
+    toggle.classList.toggle('is-on', isOn);
+    toggle.setAttribute('aria-pressed', String(isOn));
+  }
+
+  const weekday = Number(settings.weeklySummaryWeekday);
+  document.querySelectorAll('#settings-weekday-options .weekday-option').forEach((button) => {
+    button.classList.toggle('is-selected', Number(button.dataset.weekday) === weekday);
+  });
+}
+
+function renderProjectManager() {
+  const container = document.getElementById('settings-project-list');
+
+  if (!container) {
+    return;
+  }
+
+  container.replaceChildren();
+  const projects = getProjects();
+  const records = getRecords();
+
+  projects.forEach((project) => {
+    const isUncategorized = project.id === UNCATEGORIZED_PROJECT_ID;
+    const row = document.createElement('div');
+    row.className = 'project-row';
+
+    const swatch = document.createElement('span');
+    swatch.className = 'project-row__swatch';
+    swatch.style.background = project.color || '#9E9E9E';
+    swatch.textContent = project.icon || '';
+
+    const name = document.createElement('span');
+    name.className = 'project-row__name';
+    const count = records.filter((record) => (record.projectId || UNCATEGORIZED_PROJECT_ID) === project.id).length;
+    name.textContent = `${project.name}（${count} 🍅）`;
+
+    row.append(swatch, name);
+
+    if (!isUncategorized) {
+      const editBtn = document.createElement('button');
+      editBtn.className = 'project-row__action';
+      editBtn.type = 'button';
+      editBtn.textContent = '✏️';
+      editBtn.setAttribute('aria-label', '编辑项目');
+      editBtn.addEventListener('click', () => openProjectEditModal(project));
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'project-row__action';
+      delBtn.type = 'button';
+      delBtn.textContent = '🗑️';
+      delBtn.setAttribute('aria-label', '删除项目');
+      delBtn.addEventListener('click', () => {
+        if (confirm(`删除项目「${project.name}」？该项目下的番茄将归到「未分类」，其目标一并删除。`)) {
+          deleteProject(project.id);
+          renderProjectManager();
+          refreshRecordViews();
+          showToast('项目已删除');
+        }
+      });
+
+      row.append(editBtn, delBtn);
+    }
+
+    container.appendChild(row);
+  });
+}
+
+function openProjectEditModal(project) {
+  const data = project || {
+    id: generateId(),
+    name: '',
+    color: PROJECT_COLOR_PRESETS[0],
+    icon: '📁',
+    archived: false
+  };
+
+  const colorSwatches = PROJECT_COLOR_PRESETS.map((color) => {
+    const selected = color === data.color ? ' is-selected' : '';
+    return `<button type="button" class="color-swatch${selected}" data-color="${color}" style="background:${color}" aria-label="颜色 ${color}"></button>`;
+  }).join('');
+
+  const modal = openModal(`
+    <h2 class="modal__title">${isNew ? '新建项目' : '编辑项目'}</h2>
+    <div class="modal__body">
+      <form id="project-form">
+        <div class="field">
+          <label class="field__label" for="project-name">项目名</label>
+          <input id="project-name" class="field__input" type="text" maxlength="20" placeholder="例如：写作" value="${escapeHtml(data.name)}">
+        </div>
+        <div class="field">
+          <label class="field__label" for="project-icon">图标（emoji）</label>
+          <input id="project-icon" class="field__input" type="text" maxlength="2" placeholder="📁" value="${escapeHtml(data.icon || '')}">
+        </div>
+        <div class="field">
+          <span class="field__label">颜色</span>
+          <div class="color-swatches">${colorSwatches}</div>
+        </div>
+        <div id="project-form-error" class="modal__error" hidden></div>
+        <div class="modal__actions">
+          <button id="project-cancel-btn" class="btn btn--ghost" type="button">取消</button>
+          <button class="btn btn--primary" type="submit">保存</button>
+        </div>
+      </form>
+    </div>
+  `);
+
+  const form = modal.querySelector('#project-form');
+  const nameInput = modal.querySelector('#project-name');
+  const iconInput = modal.querySelector('#project-icon');
+  const error = modal.querySelector('#project-form-error');
+  const swatchButtons = Array.from(modal.querySelectorAll('.color-swatch'));
+  let selectedColor = data.color;
+
+  swatchButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      selectedColor = button.dataset.color;
+      swatchButtons.forEach((other) => other.classList.toggle('is-selected', other === button));
+    });
+  });
+
+  modal.querySelector('#project-cancel-btn')?.addEventListener('click', closeActiveModal);
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const name = nameInput.value.trim();
+
+    if (!name) {
+      error.textContent = '请填写项目名。';
+      error.hidden = false;
+      return;
+    }
+
+    const patch = {
+      name,
+      icon: iconInput.value.trim() || '📁',
+      color: selectedColor
+    };
+
+    if (isNew) {
+      addProject({ ...data, ...patch });
+    } else {
+      updateProject(data.id, patch);
+    }
+
+    closeActiveModal();
+    renderProjectManager();
+    refreshRecordViews();
+    showToast(isNew ? '项目已创建' : '项目已更新');
+  });
+
+  nameInput.focus();
 }
 
 function buildRecordTextLine(record) {
@@ -2898,18 +4368,21 @@ function exportCSV() {
   };
 
   const lines = [
-    '日期,开始时间,结束时间,时长,目标,达成,质量,总结,打断,打断备注'
+    '日期,开始时间,结束时间,时长,项目,目标,达成,质量,精力,总结,打断,打断备注'
   ];
 
   sortRecordsByDateTimeDesc(getRecords()).forEach((record) => {
+    const project = getProjectById(record.projectId);
     lines.push([
       csvEscape(record.date),
       csvEscape(record.startTime),
       csvEscape(record.endTime),
       csvEscape(record.duration),
+      csvEscape(project ? project.name : '未分类'),
       csvEscape(record.goal),
       csvEscape(achievementLabels[record.achievement] || '未知'),
       csvEscape(record.quality),
+      csvEscape(record.energy || ''),
       csvEscape(record.summary),
       csvEscape(record.interrupted ? '是' : '否'),
       csvEscape(record.interruptionNote)
@@ -2921,6 +4394,74 @@ function exportCSV() {
   showToast('✅ CSV 已开始下载');
 }
 
+// 将所有 LLM 相关记录导出为多工作表 Excel（Excel 2003 XML 格式，双击即用 Excel/WPS 打开）
+function exportLLMRecords() {
+  const xmlEscape = (value) => String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/\r\n|\r|\n/g, '&#10;');
+
+  const buildSheet = (name, headers, rows) => {
+    const headerCells = headers.map((h) => `<Cell><Data ss:Type="String">${xmlEscape(h)}</Data></Cell>`).join('');
+    const bodyRows = rows.map((row) => {
+      const cells = row.map((value) => `<Cell><Data ss:Type="String">${xmlEscape(value)}</Data></Cell>`).join('');
+      return `<Row>${cells}</Row>`;
+    }).join('');
+    return `<Worksheet ss:Name="${xmlEscape(name)}"><Table><Row>${headerCells}</Row>${bodyRows}</Table></Worksheet>`;
+  };
+
+  const formatDateTime = (iso) => {
+    if (!iso) return '';
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? iso : `${formatDateValue(date)} ${formatTime(date)}`;
+  };
+
+  const reports = getReports().slice().sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''));
+
+  const dailyRows = reports
+    .filter((report) => report.type === 'daily')
+    .map((report) => [report.dateKey || '', formatDateTime(report.createdAt), report.recordCount ?? '', report.content || '']);
+
+  const weeklyRows = reports
+    .filter((report) => report.type === 'weekly')
+    .map((report) => [String(report.dateKey || '').replace('_', ' 至 '), formatDateTime(report.createdAt), report.recordCount ?? '', report.auto ? '是' : '否', report.content || '']);
+
+  const chatRows = getChats().slice()
+    .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
+    .map((chat) => [chat.date || '', formatDateTime(chat.createdAt), chat.question || '', chat.answer || '']);
+
+  const journals = getJournals();
+  const journalRows = Object.keys(journals)
+    .sort((left, right) => right.localeCompare(left))
+    .map((date) => [date, journals[date] || '']);
+
+  const sheets = [
+    buildSheet('日报', ['日期', '生成时间', '番茄数', '报告内容'], dailyRows),
+    buildSheet('周报', ['范围', '生成时间', '番茄数', '是否自动', '报告内容'], weeklyRows),
+    buildSheet('自由提问', ['日期', '时间', '提问', 'AI 回复'], chatRows),
+    buildSheet('每日自评', ['日期', '自评内容'], journalRows)
+  ].join('');
+
+  const workbook = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+${sheets}
+</Workbook>`;
+
+  if (!dailyRows.length && !weeklyRows.length && !chatRows.length && !journalRows.length) {
+    showToast('还没有可导出的 LLM 记录', 'error');
+    return;
+  }
+
+  triggerDownload(
+    new Blob(['\uFEFF' + workbook], { type: 'application/vnd.ms-excel;charset=utf-8;' }),
+    `tomato-coach-llm-${today()}.xls`
+  );
+  showToast('✅ LLM 记录（Excel）已开始下载');
+}
+
 async function exportJSON() {
   let passwordProvided = false;
 
@@ -2930,10 +4471,15 @@ async function exportJSON() {
     passwordProvided = true;
 
     const payload = {
-      version: 1,
+      version: 3,
       exportedAt: new Date().toISOString(),
       records: getRecords(),
-      reminders: getReminders()
+      reminders: getReminders(),
+      projects: getProjects(),
+      goals: getGoals(),
+      reports: getReports(),
+      journals: getJournals(),
+      chats: getChats()
     };
     const encryptedPayload = await encryptData(JSON.stringify(payload));
     const json = JSON.stringify({ encrypted: true, data: encryptedPayload }, null, 2);
@@ -3001,16 +4547,30 @@ async function importJSON(file) {
     const hasVersion = Object.prototype.hasOwnProperty.call(parsed, 'version');
     const records = Array.isArray(parsed.records) ? parsed.records : [];
     const reminders = Array.isArray(parsed.reminders) ? parsed.reminders : [];
+    const projects = Array.isArray(parsed.projects) ? parsed.projects : [];
+    const goals = Array.isArray(parsed.goals) ? parsed.goals : [];
+    const reports = Array.isArray(parsed.reports) ? parsed.reports : [];
+    const journals = parsed.journals && typeof parsed.journals === 'object' && !Array.isArray(parsed.journals) ? parsed.journals : {};
+    const chats = Array.isArray(parsed.chats) ? parsed.chats : [];
 
     if (!hasVersion || (!Array.isArray(parsed.records) && !Array.isArray(parsed.reminders))) {
       showToast('文件格式不正确', 'error');
       return;
     }
 
+    const extraCounts = [];
+    if (projects.length) extraCounts.push(`${projects.length} 个项目`);
+    if (goals.length) extraCounts.push(`${goals.length} 个目标`);
+    if (reports.length) extraCounts.push(`${reports.length} 份报告`);
+    const journalCount = Object.keys(journals).length;
+    if (journalCount) extraCounts.push(`${journalCount} 篇日记`);
+    if (chats.length) extraCounts.push(`${chats.length} 条对话`);
+    const extraText = extraCounts.length ? `、${extraCounts.join('、')}` : '';
+
     const modal = openModal(`
       <h2 class="modal__title">导入确认</h2>
       <div class="modal__body">
-        <p>将导入 ${records.length} 条记录、${reminders.length} 条提醒</p>
+        <p>将导入 ${records.length} 条记录、${reminders.length} 条提醒${extraText}</p>
         <div class="modal__actions">
           <button id="import-merge-btn" class="btn btn--primary" type="button">合并</button>
           <button id="import-replace-btn" class="btn btn--secondary" type="button">覆盖</button>
@@ -3037,19 +4597,57 @@ async function importJSON(file) {
 
       saveRecords(mergedRecords);
       saveReminders(mergedReminders);
+
+      if (projects.length) {
+        saveProjects(mergeProjects(getProjects(), projects));
+      }
+      if (goals.length) {
+        saveGoals(mergeGoals(getGoals(), goals));
+      }
+      if (reports.length) {
+        saveReports(mergeReports(getReports(), reports));
+        cleanOldReports();
+      }
+      if (journalCount) {
+        saveJournals(mergeJournals(getJournals(), journals));
+      }
+      if (chats.length) {
+        saveChats(mergeChats(getChats(), chats));
+      }
+
+      ensureProjectMigration();
+      loadChatHistoryFromStore();
       closeActiveModal();
       showToast('✅ 已合并导入');
       refreshRecordViews();
       refreshReminderViews();
+      renderReportHistory('daily');
+      renderReportHistory('weekly');
+      renderChatHistory();
     });
 
     modal.querySelector('#import-replace-btn')?.addEventListener('click', () => {
       saveRecords(records);
       saveReminders(reminders);
+
+      if (projects.length) {
+        saveProjects(mergeProjects(projects, []));
+      }
+      saveGoals(goals);
+      saveReports(reports);
+      cleanOldReports();
+      saveJournals(journals);
+      saveChats(chats);
+
+      ensureProjectMigration();
+      loadChatHistoryFromStore();
       closeActiveModal();
       showToast('✅ 已覆盖导入');
       refreshRecordViews();
       refreshReminderViews();
+      renderReportHistory('daily');
+      renderReportHistory('weekly');
+      renderChatHistory();
     });
   } catch (error) {
     showToast('文件格式不正确', 'error');
@@ -3325,6 +4923,7 @@ function bindSettingsEvents() {
   DOM.exportCopyToday.addEventListener('click', exportCopyToday);
   DOM.exportCopyWeek.addEventListener('click', exportCopyWeek);
   DOM.exportCsv.addEventListener('click', exportCSV);
+  DOM.exportLlmXls?.addEventListener('click', exportLLMRecords);
   DOM.exportJson.addEventListener('click', () => {
     void exportJSON();
   });
@@ -3364,6 +4963,24 @@ function bindSettingsEvents() {
     openClearAllDataModal();
   });
 
+  document.getElementById('settings-project-add')?.addEventListener('click', () => {
+    openProjectEditModal(null);
+  });
+
+  document.getElementById('settings-auto-weekly-toggle')?.addEventListener('click', () => {
+    const next = !getSettings().autoWeeklySummary;
+    saveSettings({ autoWeeklySummary: next });
+    renderCoachSettings();
+    showToast(next ? '已开启自动周总结' : '已关闭自动周总结');
+  });
+
+  document.querySelectorAll('#settings-weekday-options .weekday-option').forEach((button) => {
+    button.addEventListener('click', () => {
+      saveSettings({ weeklySummaryWeekday: Number(button.dataset.weekday) });
+      renderCoachSettings();
+    });
+  });
+
   APP_STATE.settingsEventsBound = true;
 }
 
@@ -3376,29 +4993,118 @@ function playBeep() {
     }
 
     const audioContext = new AudioContextClass();
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
-    const now = audioContext.currentTime;
-
-    oscillator.type = 'sine';
-    oscillator.frequency.setValueAtTime(440, now);
-    gainNode.gain.setValueAtTime(0.08, now);
-    gainNode.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
-
-    oscillator.connect(gainNode);
-    gainNode.connect(audioContext.destination);
 
     if (audioContext.state === 'suspended') {
       audioContext.resume().catch(() => {});
     }
 
-    oscillator.start(now);
-    oscillator.stop(now + 0.18);
-    oscillator.onended = () => {
+    // 三声递进「叮」，更响更持久，避免被忽略
+    const base = audioContext.currentTime;
+    [880, 1046, 1318].forEach((freq, index) => {
+      const start = base + index * 0.22;
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(freq, start);
+      gainNode.gain.setValueAtTime(0.0001, start);
+      gainNode.gain.exponentialRampToValueAtTime(0.25, start + 0.02);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, start + 0.2);
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      oscillator.start(start);
+      oscillator.stop(start + 0.2);
+    });
+
+    window.setTimeout(() => {
       audioContext.close().catch(() => {});
-    };
+    }, 900);
   } catch (error) {
     // ignore beep failures to avoid blocking the evaluation flow
+  }
+}
+
+// 生成一段极短静音 WAV，用于番茄进行期间循环播放，
+// 防止浏览器把后台标签页的定时器/音频冻结，从而保证「到点」能立即响铃提醒。
+function getSilentAudioUrl() {
+  if (_keepAliveAudioUrl) {
+    return _keepAliveAudioUrl;
+  }
+
+  const sampleRate = 8000;
+  const numSamples = sampleRate; // 1 秒
+  const buffer = new ArrayBuffer(44 + numSamples * 2);
+  const view = new DataView(buffer);
+  const writeStr = (offset, str) => {
+    for (let i = 0; i < str.length; i += 1) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + numSamples * 2, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, numSamples * 2, true);
+  // 采样数据全为 0，即静音
+
+  _keepAliveAudioUrl = URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }));
+  return _keepAliveAudioUrl;
+}
+
+function startKeepAlive() {
+  try {
+    if (!_keepAliveAudio) {
+      _keepAliveAudio = new Audio(getSilentAudioUrl());
+      _keepAliveAudio.loop = true;
+    }
+
+    _keepAliveAudio.play().catch(() => {});
+  } catch (error) {
+    // ignore：保活失败仅影响后台提醒时效，不阻塞计时
+  }
+}
+
+function stopKeepAlive() {
+  if (_keepAliveAudio) {
+    _keepAliveAudio.pause();
+  }
+}
+
+// 用绝对截止时间安排一次精确的到点触发，作为 500ms 轮询的兜底，
+// 配合静音保活音频，即使标签页在后台也能在到点瞬间响铃。
+function scheduleTimerEnd() {
+  clearTimerEndTimeout();
+
+  if (!APP_STATE.sessionEndEpoch) {
+    return;
+  }
+
+  const delay = Math.max(0, APP_STATE.sessionEndEpoch - Date.now());
+  APP_STATE.endTimeoutId = window.setTimeout(() => {
+    APP_STATE.endTimeoutId = null;
+
+    if (APP_STATE.timerState === TIMER_STATES.RUNNING) {
+      beginEvaluationFlow();
+    } else if (APP_STATE.timerState === TIMER_STATES.BREAK) {
+      endBreak();
+    }
+  }, delay);
+}
+
+function clearTimerEndTimeout() {
+  if (APP_STATE.endTimeoutId) {
+    clearTimeout(APP_STATE.endTimeoutId);
+    APP_STATE.endTimeoutId = null;
   }
 }
 
@@ -3429,6 +5135,8 @@ function resetTimerState(options = {}) {
   const shouldCloseModal = options.closeModal !== false;
 
   clearTimerInterval();
+  clearTimerEndTimeout();
+  stopKeepAlive();
   stopAlarm();
 
   if (shouldCloseModal) {
@@ -3466,6 +5174,14 @@ function openRecordFormModal(options) {
     onSubmit
   } = options;
 
+  const projects = getActiveProjects();
+  const currentProjectId = initialData.projectId || APP_STATE.sessionProjectId || UNCATEGORIZED_PROJECT_ID;
+  const projectOptionsHtml = projects.map((project) => {
+    const selected = project.id === currentProjectId ? ' selected' : '';
+    return `<option value="${escapeHtml(project.id)}"${selected}>${escapeHtml(project.icon || '')} ${escapeHtml(project.name)}</option>`;
+  }).join('');
+  const currentEnergy = Number(initialData.energy || 0);
+
   const modal = openModal(`
     <h2 class="modal__title">${title}</h2>
     <div class="modal__body">
@@ -3476,6 +5192,10 @@ function openRecordFormModal(options) {
             <input id="record-goal" class="field__input" type="text" placeholder="写下这次番茄的目标">
           </div>
         ` : ''}
+        <div class="field">
+          <label class="field__label" for="record-project">项目</label>
+          <select id="record-project" class="field__input">${projectOptionsHtml}</select>
+        </div>
         ${includeTimingFields ? `
           <div class="field">
             <label class="field__label" for="record-date">日期</label>
@@ -3503,6 +5223,14 @@ function openRecordFormModal(options) {
           <div class="star-rating">
             ${[1, 2, 3, 4, 5].map((value) => {
               return `<button class="star-rating__star" type="button" data-value="${value}" aria-label="${value} 星">★</button>`;
+            }).join('')}
+          </div>
+        </div>
+        <div class="energy-field">
+          <div class="energy-field__label">精力状态<span class="field__optional">（可选）</span></div>
+          <div class="energy-options">
+            ${ENERGY_OPTIONS.map((option) => {
+              return `<button class="energy-option" type="button" data-value="${option.value}">${option.label}</button>`;
             }).join('')}
           </div>
         </div>
@@ -3553,6 +5281,7 @@ function openRecordFormModal(options) {
   const form = modal.querySelector('#record-form');
   const error = modal.querySelector('#record-form-error');
   const goalInput = modal.querySelector('#record-goal');
+  const projectSelect = modal.querySelector('#record-project');
   const dateInput = modal.querySelector('#record-date');
   const startTimeInput = modal.querySelector('#record-start-time');
   const endTimeInput = modal.querySelector('#record-end-time');
@@ -3563,9 +5292,11 @@ function openRecordFormModal(options) {
   const practicedReminderInputs = Array.from(modal.querySelectorAll('[data-practiced-reminder]'));
   const achievementButtons = Array.from(modal.querySelectorAll('.achievement-option'));
   const starButtons = Array.from(modal.querySelectorAll('.star-rating__star'));
+  const energyButtons = Array.from(modal.querySelectorAll('.energy-option'));
   const cancelButton = modal.querySelector('#record-cancel-btn');
   let selectedAchievement = initialData.achievement || '';
   let selectedQuality = Number(initialData.quality || 0);
+  let selectedEnergy = currentEnergy;
 
   function syncAchievementButtons() {
     achievementButtons.forEach((button) => {
@@ -3577,6 +5308,12 @@ function openRecordFormModal(options) {
     starButtons.forEach((button) => {
       const starValue = Number(button.dataset.value || '0');
       button.classList.toggle('is-active', starValue <= selectedQuality);
+    });
+  }
+
+  function syncEnergyButtons() {
+    energyButtons.forEach((button) => {
+      button.classList.toggle('is-selected', Number(button.dataset.value || '0') === selectedEnergy);
     });
   }
 
@@ -3602,6 +5339,7 @@ function openRecordFormModal(options) {
   interruptionNoteInput.value = initialData.interruptionNote || '';
   syncAchievementButtons();
   syncStarButtons();
+  syncEnergyButtons();
 
   cancelButton.addEventListener('click', () => {
     closeActiveModal();
@@ -3620,6 +5358,14 @@ function openRecordFormModal(options) {
       selectedQuality = Number(button.dataset.value || '0');
       syncStarButtons();
       error.hidden = true;
+    });
+  });
+
+  energyButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      const value = Number(button.dataset.value || '0');
+      selectedEnergy = selectedEnergy === value ? 0 : value; // 再次点击可取消
+      syncEnergyButtons();
     });
   });
 
@@ -3697,8 +5443,10 @@ function openRecordFormModal(options) {
       startTime,
       endTime,
       duration,
+      projectId: projectSelect ? projectSelect.value : (initialData.projectId || UNCATEGORIZED_PROJECT_ID),
       achievement: selectedAchievement,
       quality: selectedQuality,
+      energy: selectedEnergy || null,
       summary,
       interrupted: interruptedInput.checked,
       interruptionNote: interruptedInput.checked ? interruptionNoteInput.value.trim() : '',
@@ -3745,8 +5493,10 @@ function completeSessionEvaluation(formData) {
     endTime: formatTime(endDate),
     duration: APP_STATE.sessionDurationMinutes,
     goal: APP_STATE.sessionGoal,
+    projectId: formData.projectId || APP_STATE.sessionProjectId || UNCATEGORIZED_PROJECT_ID,
     achievement: formData.achievement,
     quality: formData.quality,
+    energy: formData.energy || null,
     summary: formData.summary,
     interrupted: formData.interrupted,
     interruptionNote: formData.interruptionNote,
@@ -3877,8 +5627,10 @@ function openEditRecordModal(record) {
     initialData: record,
     onSubmit: (formData) => {
       updateRecord(record.id, {
+        projectId: formData.projectId,
         achievement: formData.achievement,
         quality: formData.quality,
+        energy: formData.energy || null,
         summary: formData.summary,
         interrupted: formData.interrupted,
         interruptionNote: formData.interruptionNote
@@ -3909,8 +5661,10 @@ function openAddRecordModal() {
         endTime: formData.endTime,
         duration: formData.duration,
         goal: formData.goal,
+        projectId: formData.projectId || UNCATEGORIZED_PROJECT_ID,
         achievement: formData.achievement,
         quality: formData.quality,
+        energy: formData.energy || null,
         summary: formData.summary,
         interrupted: formData.interrupted,
         interruptionNote: formData.interruptionNote,
@@ -3926,6 +5680,8 @@ function openAddRecordModal() {
 
 function beginEvaluationFlow() {
   clearTimerInterval();
+  clearTimerEndTimeout();
+  stopKeepAlive();
   APP_STATE.timerState = TIMER_STATES.EVALUATING;
   APP_STATE.remainingSeconds = 0;
   APP_STATE.pendingAlarm = true;
@@ -3940,11 +5696,11 @@ function beginEvaluationFlow() {
     navigator.serviceWorker.ready.then((reg) => {
       reg.showNotification('🍅 番茄时钟结束！', {
         body: APP_STATE.sessionGoal ? `目标：${APP_STATE.sessionGoal}` : '去记录这个番茄吧',
-        icon: 'icons/icon-192.png',
-        badge: 'icons/icon-192.png',
+        icon: NOTIFICATION_ICON,
+        badge: NOTIFICATION_ICON,
         tag: 'pomodoro-end',
         renotify: true,
-        requireInteraction: false,
+        requireInteraction: true,
       });
     }).catch(() => {});
   }
@@ -4033,10 +5789,15 @@ function startBreakCountdown(type) {
 
     updateTimerUI();
   }, 500);
+
+  startKeepAlive();
+  scheduleTimerEnd();
 }
 
 function endBreak() {
   clearTimerInterval();
+  clearTimerEndTimeout();
+  stopKeepAlive();
   playBeep();
 
   if ('vibrate' in navigator) {
@@ -4047,7 +5808,8 @@ function endBreak() {
     navigator.serviceWorker.ready.then((reg) => {
       reg.showNotification('⏰ 休息结束，准备下一个番茄！', {
         body: '点击回到计时器',
-        icon: 'icons/icon-192.png',
+        icon: NOTIFICATION_ICON,
+        badge: NOTIFICATION_ICON,
         tag: 'break-end',
         renotify: true
       });
@@ -4077,10 +5839,11 @@ function startCountdown() {
   }, 500); // 500ms 轮询，让误差不超过 0.5 秒
 }
 
-function startPomodoro(goal) {
+function startPomodoro(goal, projectId) {
   const startDate = new Date();
 
   APP_STATE.sessionGoal = goal;
+  APP_STATE.sessionProjectId = projectId || UNCATEGORIZED_PROJECT_ID;
   APP_STATE.sessionStartTime = formatTime(startDate);
   APP_STATE.sessionDate = today();
   APP_STATE.sessionDurationMinutes = getTimerDurationMinutes();
@@ -4091,13 +5854,26 @@ function startPomodoro(goal) {
   closeActiveModal();
   updateTimerUI();
   startCountdown();
+  startKeepAlive();
+  scheduleTimerEnd();
 }
 
 function showGoalModal() {
+  const projects = getActiveProjects();
+  const lastProjectId = APP_STATE.sessionProjectId || UNCATEGORIZED_PROJECT_ID;
+  const projectOptions = projects.map((project) => {
+    const selected = project.id === lastProjectId ? ' selected' : '';
+    return `<option value="${escapeHtml(project.id)}"${selected}>${escapeHtml(project.icon || '')} ${escapeHtml(project.name)}</option>`;
+  }).join('');
+
   const modal = openModal(`
     <h2 class="modal__title">这个番茄我要产出什么？</h2>
     <div class="modal__body">
       <form id="goal-form">
+        <div class="field">
+          <label class="field__label" for="goal-project">项目</label>
+          <select id="goal-project" class="field__input">${projectOptions}</select>
+        </div>
         <div class="field">
           <label class="field__label" for="goal-input">目标</label>
           <input id="goal-input" class="field__input" type="text" placeholder="例如：写完需求评审纪要" required>
@@ -4113,6 +5889,7 @@ function showGoalModal() {
 
   const form = modal.querySelector('#goal-form');
   const input = modal.querySelector('#goal-input');
+  const projectSelect = modal.querySelector('#goal-project');
   const error = modal.querySelector('#goal-form-error');
   const cancelButton = modal.querySelector('#goal-cancel-btn');
 
@@ -4132,7 +5909,7 @@ function showGoalModal() {
       return;
     }
 
-    startPomodoro(goal);
+    startPomodoro(goal, projectSelect ? projectSelect.value : UNCATEGORIZED_PROJECT_ID);
   });
 
   input.focus();
@@ -4141,6 +5918,8 @@ function showGoalModal() {
 function handlePauseToggle() {
   if (APP_STATE.timerState === TIMER_STATES.RUNNING) {
     clearTimerInterval();
+    clearTimerEndTimeout();
+    stopKeepAlive();
     APP_STATE.sessionEndEpoch = 0; // 暂停期间 epoch 清零，remainingSeconds 是唯一时间源
     APP_STATE.timerState = TIMER_STATES.PAUSED;
     updateTimerUI();
@@ -4153,6 +5932,8 @@ function handlePauseToggle() {
     APP_STATE.sessionEndEpoch = Date.now() + APP_STATE.remainingSeconds * 1000;
     updateTimerUI();
     startCountdown();
+    startKeepAlive();
+    scheduleTimerEnd();
   }
 }
 
@@ -4176,6 +5957,10 @@ function bindTimerEvents() {
   DOM.startTimerBtn.addEventListener('click', showGoalModal);
   DOM.pauseTimerBtn.addEventListener('click', handlePauseToggle);
   DOM.stopTimerBtn.addEventListener('click', handleStopTimer);
+
+  document.getElementById('goals-add-btn')?.addEventListener('click', () => {
+    openGoalEditModal(null);
+  });
 
   APP_STATE.timerEventsBound = true;
 }
@@ -4372,17 +6157,76 @@ function handleReminderAction(action, reminderId) {
 
   if (action === 'improve') {
     markReminderImproved(reminderId);
-  } else if (action === 'defer') {
-    deferReminder(reminderId);
-  } else if (action === 'ignore') {
-    ignoreReminder(reminderId);
-  } else if (action === 'reactivate') {
-    reactivateReminder(reminderId);
-  } else {
+    refreshReminderViews();
     return;
   }
 
-  refreshReminderViews();
+  if (action === 'reactivate') {
+    reactivateReminder(reminderId);
+    refreshReminderViews();
+    return;
+  }
+
+  if (action === 'defer' || action === 'ignore') {
+    const isIgnore = action === 'ignore';
+    promptReminderReason(isIgnore).then((reason) => {
+      if (reason === null) {
+        return; // 用户取消
+      }
+
+      if (isIgnore) {
+        ignoreReminder(reminderId, reason);
+      } else {
+        deferReminder(reminderId, reason);
+      }
+
+      refreshReminderViews();
+    });
+  }
+}
+
+// 弹出原因输入框（可填可跳过）。返回 Promise：字符串=原因（可能为空），null=取消
+function promptReminderReason(isIgnore) {
+  return new Promise((resolve) => {
+    const title = isIgnore ? '为什么觉得这条建议没用？' : '为什么暂时搁置这条建议？';
+    const hint = isIgnore
+      ? '写下原因，教练以后会避免再提这类无效建议（可跳过）。'
+      : '写下原因，教练以后会据此调整时机或方式（可跳过）。';
+
+    const modal = openModal(`
+      <h2 class="modal__title">${title}</h2>
+      <div class="modal__body">
+        <p class="modal__hint">${hint}</p>
+        <div class="field">
+          <textarea id="reminder-reason-input" class="field__textarea" rows="3" placeholder="例如：这条对我不适用，我的卡点其实是……"></textarea>
+        </div>
+        <div class="modal__actions">
+          <button id="reminder-reason-skip" class="btn btn--ghost" type="button">跳过</button>
+          <button id="reminder-reason-confirm" class="btn btn--primary" type="button">确认</button>
+        </div>
+      </div>
+    `);
+
+    const input = modal.querySelector('#reminder-reason-input');
+    let settled = false;
+
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      closeActiveModal();
+      resolve(value);
+    };
+
+    modal.querySelector('#reminder-reason-confirm')?.addEventListener('click', () => done(input ? input.value.trim() : ''));
+    modal.querySelector('#reminder-reason-skip')?.addEventListener('click', () => done(''));
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) {
+        done(null);
+      }
+    });
+
+    window.setTimeout(() => input?.focus(), 100);
+  });
 }
 
 function bindCoachEvents() {
@@ -4455,6 +6299,7 @@ function showPage(pageId) {
 
   if (pageId === 'page-timer') {
     renderNagArea();
+    renderGoals();
   }
 }
 
@@ -4513,6 +6358,8 @@ function promptSwUpdate() {
 function initApp() {
   cleanOldRecords();
   cleanOldReports();
+  ensureProjectMigration();
+  loadChatHistoryFromStore();
   checkReminderDays();
   cacheTimerDom();
   syncHistoryViewToDate(today());

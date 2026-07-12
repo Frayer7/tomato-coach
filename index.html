@@ -40,6 +40,14 @@
           </div>
           <div id="today-records" class="today-records"></div>
         </section>
+
+        <section class="goals-panel" aria-labelledby="goals-title">
+          <div class="section-heading">
+            <h2 id="goals-title" class="section-heading__title">目标</h2>
+            <button id="goals-add-btn" class="section-heading__add" type="button">+ 新建目标</button>
+          </div>
+          <div id="goals-list" class="goals-list"></div>
+        </section>
       </section>
 
       <section id="page-history" class="page">
@@ -132,6 +140,16 @@
                 <div id="daily-summary-count" class="coach-summary-overview__count">今日 0 个番茄</div>
                 <div id="daily-summary-preview" class="coach-record-preview"></div>
               </div>
+
+              <label class="field daily-self-note-field" for="daily-self-note">
+                <span class="field__label">今日自我评价（可选，会作为日记保存并交给教练分析）</span>
+                <textarea
+                  id="daily-self-note"
+                  class="field__textarea daily-self-note"
+                  rows="3"
+                  placeholder="今天感觉怎么样？哪里卡住了、哪里状态好？写几句，教练会结合它来分析。"
+                ></textarea>
+              </label>
 
               <button id="generate-daily-summary" class="btn btn--primary coach-action-btn" type="button">
                 <span class="coach-spinner" aria-hidden="true"></span>
@@ -342,6 +360,34 @@
             <button id="settings-timer-save" class="btn btn--primary" type="button">💾 保存时长</button>
           </section>
 
+          <section id="settings-project-card" class="settings-card" aria-labelledby="settings-project-title">
+            <h2 id="settings-project-title" class="settings-card__title">📂 项目管理</h2>
+            <p class="settings-card__desc">给番茄分类归档，供目标与统计使用。「未分类」不可删除。</p>
+            <div id="settings-project-list" class="project-list"></div>
+            <button id="settings-project-add" class="btn btn--secondary" type="button">+ 新建项目</button>
+          </section>
+
+          <section id="settings-coach-card" class="settings-card" aria-labelledby="settings-coach-title">
+            <h2 id="settings-coach-title" class="settings-card__title">📈 自动周总结</h2>
+            <p class="settings-card__desc">开启后，在设定的星期几生成今日报告时，教练会自动附带一次本周总结（评价完成情况、与目标的偏差，并对比往期）。</p>
+            <div class="settings-field settings-field--row">
+              <span class="settings-field__label">自动周总结</span>
+              <button id="settings-auto-weekly-toggle" class="toggle-btn" type="button" aria-pressed="false">关</button>
+            </div>
+            <div class="settings-field">
+              <span class="settings-field__label">在星期几生成</span>
+              <div class="weekday-options" id="settings-weekday-options">
+                <button class="weekday-option" type="button" data-weekday="0">日</button>
+                <button class="weekday-option" type="button" data-weekday="1">一</button>
+                <button class="weekday-option" type="button" data-weekday="2">二</button>
+                <button class="weekday-option" type="button" data-weekday="3">三</button>
+                <button class="weekday-option" type="button" data-weekday="4">四</button>
+                <button class="weekday-option" type="button" data-weekday="5">五</button>
+                <button class="weekday-option" type="button" data-weekday="6">六</button>
+              </div>
+            </div>
+          </section>
+
           <section id="settings-data-card" class="settings-card" aria-labelledby="settings-data-title">
             <h2 id="settings-data-title" class="settings-card__title">📦 数据管理</h2>
 
@@ -361,6 +407,7 @@
                 <button id="export-copy-today" class="btn btn--secondary" type="button">📋 复制今日记录</button>
                 <button id="export-copy-week" class="btn btn--secondary" type="button">📋 复制本周记录</button>
                 <button id="export-csv" class="btn btn--secondary" type="button">⬇️ 下载 CSV</button>
+                <button id="export-llm-xls" class="btn btn--secondary" type="button">⬇️ 导出 LLM 记录（Excel）</button>
                 <button id="export-json" class="btn btn--secondary" type="button">⬇️ 导出 JSON 备份</button>
               </div>
             </div>
