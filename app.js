@@ -1152,6 +1152,8 @@ const NOTIFICATION_ICON =
 
 let _keepAliveAudio = null;
 let _keepAliveAudioUrl = null;
+let _audioCtx = null;
+let _wakeLock = null;
 
 const DOM = {};
 
@@ -4208,6 +4210,7 @@ function renderProjectManager() {
 }
 
 function openProjectEditModal(project) {
+  const isNew = !project;
   const data = project || {
     id: generateId(),
     name: '',
@@ -4984,15 +4987,56 @@ function bindSettingsEvents() {
   APP_STATE.settingsEventsBound = true;
 }
 
+// 取得（并在需要时创建）一个复用的 AudioContext。
+// iOS 只允许在用户手势中解锁音频，故 unlockAudio 必须在点击等手势里调用。
+function getAudioContext() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+
+  if (!AudioContextClass) {
+    return null;
+  }
+
+  if (!_audioCtx) {
+    try {
+      _audioCtx = new AudioContextClass();
+    } catch (error) {
+      _audioCtx = null;
+    }
+  }
+
+  return _audioCtx;
+}
+
+// 在用户手势里解锁音频：resume + 播放一个极短静音，之后 playBeep 才能在 iOS 前台出声
+function unlockAudio() {
+  const ctx = getAudioContext();
+
+  if (!ctx) {
+    return;
+  }
+
+  if (ctx.state === 'suspended') {
+    ctx.resume().catch(() => {});
+  }
+
+  try {
+    const buffer = ctx.createBuffer(1, 1, 22050);
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.start(0);
+  } catch (error) {
+    // ignore
+  }
+}
+
 function playBeep() {
   try {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    const audioContext = getAudioContext();
 
-    if (!AudioContextClass) {
+    if (!audioContext) {
       return;
     }
-
-    const audioContext = new AudioContextClass();
 
     if (audioContext.state === 'suspended') {
       audioContext.resume().catch(() => {});
@@ -5016,10 +5060,6 @@ function playBeep() {
       oscillator.start(start);
       oscillator.stop(start + 0.2);
     });
-
-    window.setTimeout(() => {
-      audioContext.close().catch(() => {});
-    }, 900);
   } catch (error) {
     // ignore beep failures to avoid blocking the evaluation flow
   }
@@ -5080,6 +5120,31 @@ function stopKeepAlive() {
   }
 }
 
+// 屏幕常亮：番茄进行时保持不锁屏、应用在前台，让到点提醒能可靠出声（尤其 iPhone）
+function requestWakeLock() {
+  if (!('wakeLock' in navigator)) {
+    return;
+  }
+
+  navigator.wakeLock.request('screen')
+    .then((lock) => {
+      _wakeLock = lock;
+      lock.addEventListener('release', () => {
+        _wakeLock = null;
+      });
+    })
+    .catch(() => {
+      // 用户拒绝或不支持时静默失败，不影响计时
+    });
+}
+
+function releaseWakeLock() {
+  if (_wakeLock) {
+    _wakeLock.release().catch(() => {});
+    _wakeLock = null;
+  }
+}
+
 // 用绝对截止时间安排一次精确的到点触发，作为 500ms 轮询的兜底，
 // 配合静音保活音频，即使标签页在后台也能在到点瞬间响铃。
 function scheduleTimerEnd() {
@@ -5137,6 +5202,7 @@ function resetTimerState(options = {}) {
   clearTimerInterval();
   clearTimerEndTimeout();
   stopKeepAlive();
+  releaseWakeLock();
   stopAlarm();
 
   if (shouldCloseModal) {
@@ -5682,6 +5748,7 @@ function beginEvaluationFlow() {
   clearTimerInterval();
   clearTimerEndTimeout();
   stopKeepAlive();
+  releaseWakeLock();
   APP_STATE.timerState = TIMER_STATES.EVALUATING;
   APP_STATE.remainingSeconds = 0;
   APP_STATE.pendingAlarm = true;
@@ -5790,7 +5857,9 @@ function startBreakCountdown(type) {
     updateTimerUI();
   }, 500);
 
+  unlockAudio();
   startKeepAlive();
+  requestWakeLock();
   scheduleTimerEnd();
 }
 
@@ -5798,6 +5867,7 @@ function endBreak() {
   clearTimerInterval();
   clearTimerEndTimeout();
   stopKeepAlive();
+  releaseWakeLock();
   playBeep();
 
   if ('vibrate' in navigator) {
@@ -5854,7 +5924,9 @@ function startPomodoro(goal, projectId) {
   closeActiveModal();
   updateTimerUI();
   startCountdown();
+  unlockAudio();
   startKeepAlive();
+  requestWakeLock();
   scheduleTimerEnd();
 }
 
@@ -5920,6 +5992,7 @@ function handlePauseToggle() {
     clearTimerInterval();
     clearTimerEndTimeout();
     stopKeepAlive();
+    releaseWakeLock();
     APP_STATE.sessionEndEpoch = 0; // 暂停期间 epoch 清零，remainingSeconds 是唯一时间源
     APP_STATE.timerState = TIMER_STATES.PAUSED;
     updateTimerUI();
@@ -5932,7 +6005,9 @@ function handlePauseToggle() {
     APP_STATE.sessionEndEpoch = Date.now() + APP_STATE.remainingSeconds * 1000;
     updateTimerUI();
     startCountdown();
+    unlockAudio();
     startKeepAlive();
+    requestWakeLock();
     scheduleTimerEnd();
   }
 }
@@ -6401,6 +6476,10 @@ function initApp() {
         beginEvaluationFlow();
       } else {
         updateTimerUI();
+        // Wake Lock 在页面隐藏时会被系统释放，回到前台且仍在计时则重新申请
+        if (!_wakeLock) {
+          requestWakeLock();
+        }
       }
     }
 
