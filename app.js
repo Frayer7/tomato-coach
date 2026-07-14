@@ -9,6 +9,7 @@ const BUILD_DATE = '2026-07-12'; // 每次发布时手动更新此日期
  * duration: 专注时长，单位分钟
  * goal: 本次番茄钟目标
  * projectId: 所属项目 ID（默认 uncategorized）
+ * goalId: 关联的目标 ID（可选，不填则不贡献任何目标进度）
  * achievement: 完成情况，full | partial | none
  * quality: 专注质量，范围 1-5
  * energy: 精力/状态，范围 1-5（可选）
@@ -329,6 +330,10 @@ function deleteGoal(id) {
   return goals;
 }
 
+function getActiveGoalsForProject(projectId) {
+  return getGoals().filter((goal) => goal.status !== 'paused' && goal.projectId === (projectId || UNCATEGORIZED_PROJECT_ID));
+}
+
 // 一次性迁移：确保项目预设存在，并把没有 projectId 的旧番茄归到「未分类」
 function ensureProjectMigration() {
   getProjects(); // 触发首次预设写入
@@ -348,7 +353,7 @@ function ensureProjectMigration() {
   }
 }
 
-// 目标进度：统计该目标所属项目在时间窗内已完成的番茄数
+// 目标进度：只统计标记了该目标的番茄，不再把同项目所有番茄都算进去
 function getGoalProgress(goal) {
   if (!goal) {
     return { done: 0, target: 0, percent: 0 };
@@ -356,7 +361,7 @@ function getGoalProgress(goal) {
 
   const target = Number(goal.targetPomodoros) || 0;
   const records = getRecords().filter((record) => {
-    if ((record.projectId || UNCATEGORIZED_PROJECT_ID) !== goal.projectId) {
+    if (!record.goalId || record.goalId !== goal.id) {
       return false;
     }
 
@@ -4371,11 +4376,12 @@ function exportCSV() {
   };
 
   const lines = [
-    '日期,开始时间,结束时间,时长,项目,目标,达成,质量,精力,总结,打断,打断备注'
+    '日期,开始时间,结束时间,时长,项目,目标,达成,质量,精力,关联目标,总结,打断,打断备注'
   ];
 
   sortRecordsByDateTimeDesc(getRecords()).forEach((record) => {
     const project = getProjectById(record.projectId);
+    const goal = record.goalId ? getGoals().find((g) => g.id === record.goalId) : null;
     lines.push([
       csvEscape(record.date),
       csvEscape(record.startTime),
@@ -4386,6 +4392,7 @@ function exportCSV() {
       csvEscape(achievementLabels[record.achievement] || '未知'),
       csvEscape(record.quality),
       csvEscape(record.energy || ''),
+      csvEscape(goal ? goal.title : ''),
       csvEscape(record.summary),
       csvEscape(record.interrupted ? '是' : '否'),
       csvEscape(record.interruptionNote)
@@ -5262,6 +5269,17 @@ function openRecordFormModal(options) {
           <label class="field__label" for="record-project">项目</label>
           <select id="record-project" class="field__input">${projectOptionsHtml}</select>
         </div>
+        <div class="field" id="record-goal-field">
+          <label class="field__label" for="record-goal-id">目标（可选）</label>
+          <select id="record-goal-id" class="field__input">
+            <option value="">（不关联目标）</option>
+            ${getActiveGoalsForProject(currentProjectId).map((goal) => {
+              const progress = getGoalProgress(goal);
+              const selected = goal.id === (initialData.goalId || '') ? ' selected' : '';
+              return `<option value="${escapeHtml(goal.id)}"${selected}>${escapeHtml(goal.title)}（${progress.done}/${progress.target}）</option>`;
+            }).join('')}
+          </select>
+        </div>
         ${includeTimingFields ? `
           <div class="field">
             <label class="field__label" for="record-date">日期</label>
@@ -5348,6 +5366,7 @@ function openRecordFormModal(options) {
   const error = modal.querySelector('#record-form-error');
   const goalInput = modal.querySelector('#record-goal');
   const projectSelect = modal.querySelector('#record-project');
+  const goalIdSelect = modal.querySelector('#record-goal-id');
   const dateInput = modal.querySelector('#record-date');
   const startTimeInput = modal.querySelector('#record-start-time');
   const endTimeInput = modal.querySelector('#record-end-time');
@@ -5410,6 +5429,27 @@ function openRecordFormModal(options) {
   cancelButton.addEventListener('click', () => {
     closeActiveModal();
   });
+
+  // 项目切换时重新渲染目标下拉
+  if (projectSelect && goalIdSelect) {
+    projectSelect.addEventListener('change', () => {
+      const goals = getActiveGoalsForProject(projectSelect.value);
+      const prevValue = goalIdSelect.value;
+      goalIdSelect.replaceChildren();
+      const defaultOption = document.createElement('option');
+      defaultOption.value = '';
+      defaultOption.textContent = '（不关联目标）';
+      goalIdSelect.appendChild(defaultOption);
+      goals.forEach((goal) => {
+        const progress = getGoalProgress(goal);
+        const option = document.createElement('option');
+        option.value = goal.id;
+        option.textContent = `${goal.title}（${progress.done}/${progress.target}）`;
+        if (goal.id === prevValue) option.selected = true;
+        goalIdSelect.appendChild(option);
+      });
+    });
+  }
 
   achievementButtons.forEach((button) => {
     button.addEventListener('click', () => {
@@ -5510,6 +5550,7 @@ function openRecordFormModal(options) {
       endTime,
       duration,
       projectId: projectSelect ? projectSelect.value : (initialData.projectId || UNCATEGORIZED_PROJECT_ID),
+      goalId: goalIdSelect ? goalIdSelect.value || '' : (initialData.goalId || ''),
       achievement: selectedAchievement,
       quality: selectedQuality,
       energy: selectedEnergy || null,
@@ -5560,6 +5601,7 @@ function completeSessionEvaluation(formData) {
     duration: APP_STATE.sessionDurationMinutes,
     goal: APP_STATE.sessionGoal,
     projectId: formData.projectId || APP_STATE.sessionProjectId || UNCATEGORIZED_PROJECT_ID,
+    goalId: formData.goalId || '',
     achievement: formData.achievement,
     quality: formData.quality,
     energy: formData.energy || null,
@@ -5588,6 +5630,15 @@ function completeSessionEvaluation(formData) {
 
 function openQuickEvaluationModal() {
   const activeReminders = getActiveReminders();
+  const projectId = APP_STATE.sessionProjectId || UNCATEGORIZED_PROJECT_ID;
+  const projectGoals = getActiveGoalsForProject(projectId);
+  const goalOptions = projectGoals.length
+    ? projectGoals.map((goal) => {
+        const progress = getGoalProgress(goal);
+        return `<option value="${escapeHtml(goal.id)}">${escapeHtml(goal.title)}（${progress.done}/${progress.target}）</option>`;
+      }).join('')
+    : '';
+
   const modal = openModal(`
     <h2 class="modal__title">这个番茄怎么样？</h2>
     <div class="modal__body">
@@ -5600,6 +5651,15 @@ function openQuickEvaluationModal() {
             }).join('')}
           </div>
         </div>
+        ${goalOptions ? `
+        <div class="field">
+          <label class="field__label" for="quick-eval-goal-id">目标（可选）</label>
+          <select id="quick-eval-goal-id" class="field__input">
+            <option value="">（不关联目标）</option>
+            ${goalOptions}
+          </select>
+        </div>
+        ` : ''}
         <div class="field">
           <label class="field__label" for="quick-eval-summary">一句话总结</label>
           <textarea id="quick-eval-summary" class="field__textarea" placeholder="记录下你的产出或感受"></textarea>
@@ -5672,6 +5732,7 @@ function openQuickEvaluationModal() {
     }
 
     completeSessionEvaluation({
+      goalId: modal.querySelector('#quick-eval-goal-id')?.value || '',
       achievement: 'full',
       quality: selectedQuality,
       summary,
@@ -5694,6 +5755,7 @@ function openEditRecordModal(record) {
     onSubmit: (formData) => {
       updateRecord(record.id, {
         projectId: formData.projectId,
+        goalId: formData.goalId || '',
         achievement: formData.achievement,
         quality: formData.quality,
         energy: formData.energy || null,
@@ -5728,6 +5790,7 @@ function openAddRecordModal() {
         duration: formData.duration,
         goal: formData.goal,
         projectId: formData.projectId || UNCATEGORIZED_PROJECT_ID,
+        goalId: formData.goalId || '',
         achievement: formData.achievement,
         quality: formData.quality,
         energy: formData.energy || null,
