@@ -38,6 +38,9 @@ const BUILD_DATE = '2026-07-12'; // 每次发布时手动更新此日期
  * deadline: 截止日期 YYYY-MM-DD（可选）
  * status: active | done | paused
  * createdAt: 创建时间，ISO 字符串
+ * completionDate: 完成日期，ISO 字符串（status=done 时）
+ * completionReason: 完成时填的感想/总结
+ * extensions: 延期续目标历史 [{ date, reason, previousTarget, newTarget, previousDeadline, newDeadline }]
  */
 
 /**
@@ -1194,6 +1197,7 @@ function cacheTimerDom() {
   DOM.generateDailySummaryBtn = document.getElementById('generate-daily-summary');
   DOM.dailySummaryResult = document.getElementById('daily-summary-result');
   DOM.dailySelfNote = document.getElementById('daily-self-note');
+  DOM.dailySelfNoteSave = document.getElementById('daily-self-note-save');
   DOM.weeklyStartDate = document.getElementById('weekly-start-date');
   DOM.weeklyEndDate = document.getElementById('weekly-end-date');
   DOM.generateWeeklyReportBtn = document.getElementById('generate-weekly-report');
@@ -2356,9 +2360,13 @@ function renderGoals() {
   }
 
   container.replaceChildren();
-  const goals = getGoals().filter((goal) => goal.status !== 'paused');
+  const allGoals = getGoals();
+  const activeGoals = allGoals.filter((goal) => goal.status === 'active');
+  const doneGoals = allGoals.filter((goal) => goal.status === 'done').sort((left, right) => {
+    return (right.completionDate || '').localeCompare(left.completionDate || '');
+  });
 
-  if (!goals.length) {
+  if (!activeGoals.length && !doneGoals.length) {
     const empty = document.createElement('div');
     empty.className = 'goals-empty';
     empty.textContent = '还没有目标。点「+ 新建目标」给某个项目设定番茄数目标吧。';
@@ -2367,45 +2375,108 @@ function renderGoals() {
   }
 
   // 未达标的排前面
-  goals.sort((left, right) => {
+  activeGoals.sort((left, right) => {
     return getGoalProgress(left).percent - getGoalProgress(right).percent;
   });
 
-  goals.forEach((goal) => {
-    const progress = getGoalProgress(goal);
-    const project = getProjectById(goal.projectId);
-    const card = document.createElement('article');
-    card.className = 'goal-card';
+  // 活跃目标
+  activeGoals.forEach((goal) => {
+    container.appendChild(createGoalCard(goal));
+  });
 
-    card.appendChild(createProgressRing(progress.percent));
+  // 已完成目标（折叠区）
+  if (doneGoals.length) {
+    const fold = document.createElement('details');
+    fold.className = 'goal-done-fold';
 
-    const info = document.createElement('div');
-    info.className = 'goal-card__info';
+    const summary = document.createElement('summary');
+    summary.className = 'goal-done-fold__summary';
+    summary.textContent = `✅ 已完成（${doneGoals.length}）`;
 
-    const title = document.createElement('div');
-    title.className = 'goal-card__title';
+    const list = document.createElement('div');
+    list.className = 'goal-done-list';
+    doneGoals.forEach((goal) => {
+      list.appendChild(createGoalCard(goal, { isDone: true }));
+    });
 
-    if (project) {
-      const tag = document.createElement('span');
-      tag.className = 'goal-card__project';
-      tag.style.background = project.color || '#9E9E9E';
-      tag.textContent = `${project.icon || ''} ${project.name}`.trim();
-      title.appendChild(tag);
+    fold.append(summary, list);
+    container.appendChild(fold);
+  }
+}
+
+function createGoalCard(goal, options = {}) {
+  const { isDone = false } = options;
+  const progress = getGoalProgress(goal);
+  const project = getProjectById(goal.projectId);
+  const card = document.createElement('article');
+  card.className = `goal-card${isDone ? ' goal-card--done' : ''}`;
+
+  card.appendChild(createProgressRing(progress.percent));
+
+  const info = document.createElement('div');
+  info.className = 'goal-card__info';
+
+  const title = document.createElement('div');
+  title.className = 'goal-card__title';
+
+  if (project) {
+    const tag = document.createElement('span');
+    tag.className = 'goal-card__project';
+    tag.style.background = project.color || '#9E9E9E';
+    tag.textContent = `${project.icon || ''} ${project.name}`.trim();
+    title.appendChild(tag);
+  }
+
+  const titleText = document.createElement('span');
+  titleText.textContent = goal.title;
+  title.appendChild(titleText);
+
+  const meta = document.createElement('div');
+  meta.className = 'goal-card__meta';
+
+  if (isDone) {
+    const doneDate = goal.completionDate
+      ? formatDateCN(goal.completionDate.split('T')[0] || goal.completionDate)
+      : '';
+    meta.textContent = `完成于 ${doneDate} · ${progress.done} / ${goal.targetPomodoros} 🍅`;
+
+    if (goal.completionReason) {
+      const reason = document.createElement('div');
+      reason.className = 'goal-card__reason';
+      reason.textContent = goal.completionReason;
+      info.append(title, meta, reason);
+    } else {
+      info.append(title, meta);
     }
-
-    const titleText = document.createElement('span');
-    titleText.textContent = goal.title;
-    title.appendChild(titleText);
-
-    const meta = document.createElement('div');
-    meta.className = 'goal-card__meta';
+  } else {
     const deadlineHint = getGoalDeadlineHint(goal, progress);
-    meta.textContent = `${progress.done} / ${progress.target} 🍅${deadlineHint ? ` · ${deadlineHint}` : ''}`;
-
+    meta.textContent = `${progress.done} / ${goal.targetPomodoros} 🍅${deadlineHint ? ` · ${deadlineHint}` : ''}`;
     info.append(title, meta);
+  }
 
-    const actions = document.createElement('div');
-    actions.className = 'goal-card__actions';
+  const actions = document.createElement('div');
+  actions.className = 'goal-card__actions';
+
+  if (!isDone) {
+    const achieved = progress.percent >= 100;
+
+    if (achieved) {
+      const doneBtn = document.createElement('button');
+      doneBtn.className = 'goal-card__action';
+      doneBtn.type = 'button';
+      doneBtn.textContent = '✅';
+      doneBtn.setAttribute('aria-label', '确认完成');
+      doneBtn.addEventListener('click', () => openGoalCompleteModal(goal));
+
+      const extendBtn = document.createElement('button');
+      extendBtn.className = 'goal-card__action';
+      extendBtn.type = 'button';
+      extendBtn.textContent = '🔄';
+      extendBtn.setAttribute('aria-label', '延期续目标');
+      extendBtn.addEventListener('click', () => openGoalExtendModal(goal));
+
+      actions.append(doneBtn, extendBtn);
+    }
 
     const editBtn = document.createElement('button');
     editBtn.className = 'goal-card__action';
@@ -2414,23 +2485,25 @@ function renderGoals() {
     editBtn.setAttribute('aria-label', '编辑目标');
     editBtn.addEventListener('click', () => openGoalEditModal(goal));
 
-    const delBtn = document.createElement('button');
-    delBtn.className = 'goal-card__action';
-    delBtn.type = 'button';
-    delBtn.textContent = '🗑️';
-    delBtn.setAttribute('aria-label', '删除目标');
-    delBtn.addEventListener('click', () => {
-      if (confirm(`删除目标「${goal.title}」？`)) {
-        deleteGoal(goal.id);
-        renderGoals();
-        showToast('目标已删除');
-      }
-    });
+    actions.append(editBtn);
+  }
 
-    actions.append(editBtn, delBtn);
-    card.append(info, actions);
-    container.appendChild(card);
+  const delBtn = document.createElement('button');
+  delBtn.className = 'goal-card__action';
+  delBtn.type = 'button';
+  delBtn.textContent = '🗑️';
+  delBtn.setAttribute('aria-label', '删除目标');
+  delBtn.addEventListener('click', () => {
+    if (confirm(`删除目标「${goal.title}」？`)) {
+      deleteGoal(goal.id);
+      renderGoals();
+      showToast('目标已删除');
+    }
   });
+
+  actions.append(delBtn);
+  card.append(info, actions);
+  return card;
 }
 
 function openGoalEditModal(goal) {
@@ -2526,6 +2599,115 @@ function openGoalEditModal(goal) {
   });
 
   titleInput.focus();
+}
+
+function openGoalCompleteModal(goal) {
+  const progress = getGoalProgress(goal);
+  const modal = openModal(`
+    <h2 class="modal__title">✅ 确认完成目标</h2>
+    <div class="modal__body">
+      <form id="goal-complete-form">
+        <p class="modal__hint">目标「${escapeHtml(goal.title)}」已完成 ${progress.done} / ${goal.targetPomodoros} 个番茄，确认关闭这个目标？</p>
+        <div class="field">
+          <label class="field__label" for="goal-complete-reason">完成感想（可选）</label>
+          <textarea id="goal-complete-reason" class="field__textarea" rows="3" placeholder="记录下你的感想或总结，教练以后会读到"></textarea>
+        </div>
+        <div class="modal__actions">
+          <button id="goal-complete-cancel" class="btn btn--ghost" type="button">取消</button>
+          <button class="btn btn--primary" type="submit">确认完成</button>
+        </div>
+      </form>
+    </div>
+  `);
+
+  const form = modal.querySelector('#goal-complete-form');
+  modal.querySelector('#goal-complete-cancel')?.addEventListener('click', closeActiveModal);
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const reason = modal.querySelector('#goal-complete-reason')?.value.trim() || '';
+    updateGoal(goal.id, {
+      status: 'done',
+      completionDate: new Date().toISOString(),
+      completionReason: reason
+    });
+    closeActiveModal();
+    renderGoals();
+    showToast('目标已完成 ✅');
+  });
+}
+
+function openGoalExtendModal(goal) {
+  const progress = getGoalProgress(goal);
+  const currentTarget = goal.targetPomodoros || 0;
+  const currentDeadline = goal.deadline || '';
+  const modal = openModal(`
+    <h2 class="modal__title">🔄 延期续目标</h2>
+    <div class="modal__body">
+      <form id="goal-extend-form">
+        <p class="modal__hint">目标「${escapeHtml(goal.title)}」已投入 ${progress.done} 个番茄（原定 ${currentTarget} 个），但工作还没做完，需要继续推进。</p>
+        <div class="field">
+          <label class="field__label" for="goal-extend-reason">延期原因（必填）</label>
+          <textarea id="goal-extend-reason" class="field__textarea" rows="2" placeholder="为什么番茄数到了但实际没完成？之后计划怎么继续？" required></textarea>
+        </div>
+        <div class="field">
+          <label class="field__label" for="goal-extend-add">追加番茄数</label>
+          <input id="goal-extend-add" class="field__input" type="number" min="1" max="999" inputmode="numeric" value="${currentTarget}">
+        </div>
+        <div class="field">
+          <label class="field__label" for="goal-extend-deadline">新截止日期（可选）</label>
+          <input id="goal-extend-deadline" class="field__input" type="date" value="${escapeHtml(currentDeadline)}">
+        </div>
+        <div id="goal-extend-error" class="modal__error" hidden></div>
+        <div class="modal__actions">
+          <button id="goal-extend-cancel" class="btn btn--ghost" type="button">取消</button>
+          <button class="btn btn--primary" type="submit">确认延期</button>
+        </div>
+      </form>
+    </div>
+  `);
+
+  const form = modal.querySelector('#goal-extend-form');
+  const error = modal.querySelector('#goal-extend-error');
+  modal.querySelector('#goal-extend-cancel')?.addEventListener('click', closeActiveModal);
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const reason = modal.querySelector('#goal-extend-reason')?.value.trim() || '';
+
+    if (!reason) {
+      error.textContent = '请填写延期原因。';
+      error.hidden = false;
+      return;
+    }
+
+    const addPomodoros = Number(modal.querySelector('#goal-extend-add')?.value) || currentTarget;
+    const newTarget = currentTarget + addPomodoros;
+    const newDeadline = modal.querySelector('#goal-extend-deadline')?.value || '';
+    const extensions = Array.isArray(goal.extensions) ? goal.extensions.slice() : [];
+    extensions.push({
+      date: today(),
+      reason,
+      previousTarget: currentTarget,
+      newTarget,
+      previousDeadline: currentDeadline,
+      newDeadline
+    });
+
+    const patch = {
+      targetPomodoros: newTarget,
+      extensions,
+      status: 'active'
+    };
+    if (newDeadline) {
+      patch.deadline = newDeadline;
+    }
+
+    updateGoal(goal.id, patch);
+    closeActiveModal();
+    renderGoals();
+    showToast(`目标已延期续订：新增 ${addPomodoros} 个番茄`);
+  });
 }
 
 function createReminderActionChip(label, action, reminderId) {
@@ -3044,8 +3226,8 @@ function renderDailySummaryPreview() {
   DOM.dailySummaryCount.textContent = `今日 ${records.length} 个番茄`;
   renderRecordPreview(DOM.dailySummaryPreview, records, '今天还没有番茄记录，先完成一个再来复盘。');
 
-  // 回填当天已保存的自我评价日记（若用户尚未在框内编辑）
-  if (DOM.dailySelfNote && document.activeElement !== DOM.dailySelfNote) {
+  // 始终回填当天已保存的自我评价日记
+  if (DOM.dailySelfNote) {
     DOM.dailySelfNote.value = getJournal(today());
   }
 }
@@ -3898,7 +4080,7 @@ async function handleGenerateDailySummary() {
   }
 
   setResultCardContent(DOM.dailySummaryResult, result, '今天的教练报告会显示在这里。');
-  addReport({ id: generateId(), type: 'daily', dateKey: today(), content: result, createdAt: new Date().toISOString(), recordCount: records.length });
+  addReport({ id: generateId(), type: 'daily', dateKey: today(), content: result, selfNote, createdAt: new Date().toISOString(), recordCount: records.length });
   renderReportHistory('daily');
   extractReminders(result);
 
@@ -4432,7 +4614,7 @@ function exportLLMRecords() {
 
   const dailyRows = reports
     .filter((report) => report.type === 'daily')
-    .map((report) => [report.dateKey || '', formatDateTime(report.createdAt), report.recordCount ?? '', report.content || '']);
+    .map((report) => [report.dateKey || '', formatDateTime(report.createdAt), report.recordCount ?? '', report.selfNote || report._selfNote || '', report.content || '']);
 
   const weeklyRows = reports
     .filter((report) => report.type === 'weekly')
@@ -4447,11 +4629,35 @@ function exportLLMRecords() {
     .sort((left, right) => right.localeCompare(left))
     .map((date) => [date, journals[date] || '']);
 
+  const allGoals = getGoals();
+  const goalRows = allGoals.slice().sort((left, right) => (left.status === 'done' ? 1 : 0) - (right.status === 'done' ? 1 : 0))
+    .map((goal) => {
+      const progress = getGoalProgress(goal);
+      const project = getProjectById(goal.projectId);
+      const statusLabel = goal.status === 'done' ? '已完成' : goal.status === 'paused' ? '已暂停' : '进行中';
+      const extensionsText = (Array.isArray(goal.extensions) ? goal.extensions : []).map((ext) => {
+        return `${ext.date || ''} 从${ext.previousTarget}延至${ext.newTarget}，原因：${ext.reason || ''}`;
+      }).join('\n');
+      return [
+        project ? project.name : '未分类',
+        goal.title || '',
+        goal.targetPomodoros ?? '',
+        progress.done,
+        statusLabel,
+        goal.startDate || '',
+        goal.deadline || '',
+        goal.completionDate ? formatDateCN(goal.completionDate.split('T')[0] || goal.completionDate) : '',
+        goal.completionReason || '',
+        extensionsText
+      ];
+    });
+
   const sheets = [
-    buildSheet('日报', ['日期', '生成时间', '番茄数', '报告内容'], dailyRows),
+    buildSheet('日报', ['日期', '生成时间', '番茄数', '自我评价', '报告内容'], dailyRows),
     buildSheet('周报', ['范围', '生成时间', '番茄数', '是否自动', '报告内容'], weeklyRows),
     buildSheet('自由提问', ['日期', '时间', '提问', 'AI 回复'], chatRows),
-    buildSheet('每日自评', ['日期', '自评内容'], journalRows)
+    buildSheet('每日自评', ['日期', '自评内容'], journalRows),
+    buildSheet('目标', ['项目', '标题', '目标番茄数', '已完成', '状态', '创建日期', '截止日期', '完成日期', '完成感想', '延期记录'], goalRows)
   ].join('');
 
   const workbook = `<?xml version="1.0"?>
@@ -6403,6 +6609,14 @@ function bindCoachEvents() {
   DOM.generateDailySummaryBtn.addEventListener('click', handleGenerateDailySummary);
   DOM.generateWeeklyReportBtn.addEventListener('click', handleGenerateWeeklyReport);
   DOM.chatForm.addEventListener('submit', handleChatSubmit);
+
+  if (DOM.dailySelfNoteSave) {
+    DOM.dailySelfNoteSave.addEventListener('click', () => {
+      const text = DOM.dailySelfNote ? DOM.dailySelfNote.value : '';
+      setJournal(today(), text);
+      showToast('✅ 自评已保存');
+    });
+  }
 
   APP_STATE.coachEventsBound = true;
 }
