@@ -334,7 +334,7 @@ function deleteGoal(id) {
 }
 
 function getActiveGoalsForProject(projectId) {
-  return getGoals().filter((goal) => goal.status !== 'paused' && goal.projectId === (projectId || UNCATEGORIZED_PROJECT_ID));
+  return getGoals().filter((goal) => goal.status !== 'paused' && goal.status !== 'done' && goal.projectId === (projectId || UNCATEGORIZED_PROJECT_ID));
 }
 
 // 一次性迁移：确保项目预设存在，并把没有 projectId 的旧番茄归到「未分类」
