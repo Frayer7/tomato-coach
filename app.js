@@ -3842,12 +3842,12 @@ function buildPreviousDailyReportsContext() {
 function buildCoachChatSystemPrompt() {
   return `你是用户的私人番茄教练。${getTonePersona(getSettings().coachTone)}
 
-请基于用户提供的番茄记录上下文、目标进度和对话历史回答问题。回答要具体、可执行，引用上下文里的具体项目/精力/打断/目标数据来支撑观点，保持你的人设口吻。如果上下文不足，直接说明并提出你可以帮他分析的方向。`;
+你的首要任务是直接、简洁地回答用户的当前问题。上下文数据只是供你引用以支撑答案的参考，不要先复述数据、不要做一轮"总览分析"——除非用户问的本身就是"帮我分析/总结这段时间"这类宏观问题。如果上下文不足以回答，直接说明并提出你可以帮他分析的方向。`;
 }
 
 function buildCoachChatUserMessage(history, question, range) {
-  const rangeRecords = getRecordsByDateRange(range.startDate, range.endDate); // 已按时间倒序
-  const MAX_DETAIL = 40;
+  const rangeRecords = getRecordsByDateRange(range.startDate, range.endDate);
+  const MAX_DETAIL = 20;
   let detailBlock;
 
   if (!rangeRecords.length) {
@@ -3858,25 +3858,27 @@ function buildCoachChatUserMessage(history, question, range) {
     detailBlock = `${buildRecordsAggregateSummary(rangeRecords)}\n\n（记录较多，仅附最近 ${MAX_DETAIL} 条明细供参考）\n${rangeRecords.slice(0, MAX_DETAIL).map((record) => buildRecordContextLine(record)).join('\n')}`;
   }
 
-  const contextTitle = `分析范围：${range.label}（${range.startDate} 至 ${range.endDate}），共 ${rangeRecords.length} 个番茄`;
   const historyLines = history.length
     ? history.slice(-12).map((item) => `${item.role === 'user' ? '用户' : '教练'}：${item.content}`).join('\n')
     : '无';
 
-  // 与范围无关但有用的记忆：目标、已否决/已践行的建议反馈
   const extraContexts = [buildGoalsContext(), buildDismissedFeedbackContext(), buildPracticedFeedbackContext()].filter(Boolean);
   const extraContext = extraContexts.length ? `\n\n${extraContexts.join('\n\n')}` : '';
 
   const truncationText = history.length > 12 ? '（对话历史已截断至最近 6 轮）\n\n' : '';
 
-  return `${contextTitle}：
+  // 问题优先，数据在后且仅作参考
+  return `当前问题：
+${question}
+
+（以下是你可选的内容：${range.label}番茄记录、目标、建议反馈等，供你在回答上面问题时引用具体数据。不必逐条分析这些数据——只有当你需要引用某条记录来支撑你的回答时才用它）
+
+分析范围：${range.label}（${range.startDate} 至 ${range.endDate}），共 ${rangeRecords.length} 个番茄
 ${detailBlock}${extraContext}
 
 历史对话：
 ${historyLines}
-
-${truncationText}当前问题：
-${question}`;
+${truncationText}`;
 }
 
 // 把中文/阿拉伯数字（1..99，含"两""几"）解析为整数，失败返回 NaN
