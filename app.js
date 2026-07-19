@@ -1176,6 +1176,8 @@ function cacheTimerDom() {
   DOM.startTimerBtn = document.getElementById('start-timer-btn');
   DOM.pauseTimerBtn = document.getElementById('pause-timer-btn');
   DOM.stopTimerBtn = document.getElementById('stop-timer-btn');
+  DOM.calendarReminderBtn = document.getElementById('calendar-reminder-btn');
+  DOM.calendarReminderArea = document.getElementById('calendar-reminder-area');
   DOM.todayRecords = document.getElementById('today-records');
   DOM.historyTitle = document.getElementById('history-title');
   DOM.historyPrevMonth = document.getElementById('history-prev-month');
@@ -2056,6 +2058,58 @@ function getTimerDurationMinutes() {
   return Math.max(1, Math.round(rawDuration));
 }
 
+// 生成系统日历提醒（iCalendar .ics 文件），到点触发系统级提醒，锁屏也能响应
+function triggerCalendarReminder() {
+  try {
+    const endTime = new Date(Date.now() + APP_STATE.sessionEndEpoch - Date.now());
+    if (Number.isNaN(endTime.getTime())) return;
+
+    const pad = (value) => String(value).padStart(2, '0');
+    const formatICSDate = (date) => {
+      return `${date.getUTCFullYear()}${pad(date.getUTCMonth() + 1)}${pad(date.getUTCDate())}T${pad(date.getUTCHours())}${pad(date.getUTCMinutes())}${pad(date.getUTCSeconds())}Z`;
+    };
+
+    const now = new Date();
+    const start = formatICSDate(endTime);
+    const end = formatICSDate(new Date(endTime.getTime() + 60000));
+    const uid = `tomato-coach-${Date.now()}@tomato-coach`;
+    const description = APP_STATE.sessionGoal ? `番茄目标：${APP_STATE.sessionGoal}` : '番茄教练提醒——番茄结束，请去记录。';
+
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Tomato Coach//Pomodoro Reminder//ZH-CN',
+      'BEGIN:VEVENT',
+      `DTSTART:${start}`,
+      `DTEND:${end}`,
+      `UID:${uid}`,
+      'SUMMARY:🍅 番茄教练提醒',
+      `DESCRIPTION:${description}`,
+      'BEGIN:VALARM',
+      'TRIGGER:-PT0M',
+      'ACTION:DISPLAY',
+      `DESCRIPTION:${description}`,
+      'END:VALARM',
+      'END:VEVENT',
+      'END:VCALENDAR'
+    ].join('\r\n');
+
+    const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `tomato-reminder-${today()}.ics`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    showToast('📆 日历提醒文件已下载，请打开它添加到系统日历');
+  } catch (error) {
+    showToast('生成日历提醒失败', 'error');
+  }
+}
+
 function formatCountdown(totalSeconds) {
   const safeSeconds = Math.max(0, totalSeconds);
   const minutes = String(Math.floor(safeSeconds / 60)).padStart(2, '0');
@@ -2460,22 +2514,24 @@ function createGoalCard(goal, options = {}) {
   if (!isDone) {
     const achieved = progress.percent >= 100;
 
-    if (achieved) {
-      const doneBtn = document.createElement('button');
-      doneBtn.className = 'goal-card__action';
-      doneBtn.type = 'button';
-      doneBtn.textContent = '✅';
-      doneBtn.setAttribute('aria-label', '确认完成');
-      doneBtn.addEventListener('click', () => openGoalCompleteModal(goal));
+    // 确认完成：所有活跃目标都显示
+    const doneBtn = document.createElement('button');
+    doneBtn.className = 'goal-card__action';
+    doneBtn.type = 'button';
+    doneBtn.textContent = '✅';
+    doneBtn.setAttribute('aria-label', '确认完成');
+    doneBtn.addEventListener('click', () => openGoalCompleteModal(goal, progress));
+    actions.append(doneBtn);
 
+    // 延期续目标：只在达标时才显示
+    if (achieved) {
       const extendBtn = document.createElement('button');
       extendBtn.className = 'goal-card__action';
       extendBtn.type = 'button';
       extendBtn.textContent = '🔄';
       extendBtn.setAttribute('aria-label', '延期续目标');
       extendBtn.addEventListener('click', () => openGoalExtendModal(goal));
-
-      actions.append(doneBtn, extendBtn);
+      actions.append(extendBtn);
     }
 
     const editBtn = document.createElement('button');
@@ -2601,13 +2657,18 @@ function openGoalEditModal(goal) {
   titleInput.focus();
 }
 
-function openGoalCompleteModal(goal) {
-  const progress = getGoalProgress(goal);
+function openGoalCompleteModal(goal, progress) {
+  const isAchieved = (progress || getGoalProgress(goal)).percent >= 100;
+  const title = isAchieved ? '✅ 确认完成目标' : '✅ 提前完成目标';
+  const hint = isAchieved
+    ? `目标「${escapeHtml(goal.title)}」已完成 ${progress ? progress.done : getGoalProgress(goal).done} / ${goal.targetPomodoros} 个番茄，确认关闭这个目标？`
+    : `目标「${escapeHtml(goal.title)}」尚未达标（${progress ? progress.done : getGoalProgress(goal).done} / ${goal.targetPomodoros}），确认提前完成？`;
+
   const modal = openModal(`
-    <h2 class="modal__title">✅ 确认完成目标</h2>
+    <h2 class="modal__title">${title}</h2>
     <div class="modal__body">
       <form id="goal-complete-form">
-        <p class="modal__hint">目标「${escapeHtml(goal.title)}」已完成 ${progress.done} / ${goal.targetPomodoros} 个番茄，确认关闭这个目标？</p>
+        <p class="modal__hint">${hint}</p>
         <div class="field">
           <label class="field__label" for="goal-complete-reason">完成感想（可选）</label>
           <textarea id="goal-complete-reason" class="field__textarea" rows="3" placeholder="记录下你的感想或总结，教练以后会读到"></textarea>
@@ -5317,6 +5378,12 @@ function getSilentAudioUrl() {
 }
 
 function startKeepAlive() {
+  // 移动端（iOS/Android）上保活音频无实际防冻结作用，反而会抢占系统音频会话导致
+  // 其他 App 的播客/音乐被暂停。移动端直接跳过。
+  if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent || '')) {
+    return;
+  }
+
   try {
     if (!_keepAliveAudio) {
       _keepAliveAudio = new Audio(getSilentAudioUrl());
@@ -5425,6 +5492,10 @@ function resetTimerState(options = {}) {
   }
 
   document.getElementById('alarm-overlay')?.remove();
+
+  if (DOM.calendarReminderArea) {
+    DOM.calendarReminderArea.hidden = true; // 只针对 resetTimerState
+  }
 
   APP_STATE.timerState = TIMER_STATES.IDLE;
   APP_STATE.breakType = null;
@@ -6020,6 +6091,11 @@ function beginEvaluationFlow() {
   clearTimerEndTimeout();
   stopKeepAlive();
   releaseWakeLock();
+
+  if (DOM.calendarReminderArea) {
+    DOM.calendarReminderArea.hidden = true;
+  }
+
   APP_STATE.timerState = TIMER_STATES.EVALUATING;
   APP_STATE.remainingSeconds = 0;
   APP_STATE.pendingAlarm = true;
@@ -6276,11 +6352,15 @@ function handlePauseToggle() {
     APP_STATE.sessionEndEpoch = Date.now() + APP_STATE.remainingSeconds * 1000;
     updateTimerUI();
     startCountdown();
-    unlockAudio();
-    startKeepAlive();
-    requestWakeLock();
-    scheduleTimerEnd();
+  unlockAudio();
+  startKeepAlive();
+  requestWakeLock();
+  scheduleTimerEnd();
+
+  if (DOM.calendarReminderArea) {
+    DOM.calendarReminderArea.hidden = false;
   }
+}
 }
 
 function handleStopTimer() {
@@ -6303,6 +6383,10 @@ function bindTimerEvents() {
   DOM.startTimerBtn.addEventListener('click', showGoalModal);
   DOM.pauseTimerBtn.addEventListener('click', handlePauseToggle);
   DOM.stopTimerBtn.addEventListener('click', handleStopTimer);
+
+  if (DOM.calendarReminderBtn) {
+    DOM.calendarReminderBtn.addEventListener('click', triggerCalendarReminder);
+  }
 
   document.getElementById('goals-add-btn')?.addEventListener('click', () => {
     openGoalEditModal(null);

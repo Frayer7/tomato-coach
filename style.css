@@ -1674,6 +1674,18 @@ body {
   padding: 4px 12px;
 }
 
+.calendar-reminder-area {
+  margin-top: 14px;
+  text-align: center;
+}
+
+.timer-hint-text {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.4;
+}
+
 .section-heading__add {
   margin-left: auto;
   border: 0;

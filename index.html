@@ -32,6 +32,11 @@
             <button id="pause-timer-btn" class="btn btn--secondary" type="button" hidden>暂停</button>
             <button id="stop-timer-btn" class="btn btn--ghost" type="button" hidden>停止</button>
           </div>
+
+          <div id="calendar-reminder-area" class="calendar-reminder-area" hidden>
+            <button id="calendar-reminder-btn" class="btn btn--ghost btn--sm" type="button">📆 添加到系统日历提醒</button>
+            <p class="timer-hint-text">💡 iPhone：锁屏后页面会暂停，建议添加日历提醒或使用系统时钟设计时器，锁屏也能准时提醒。</p>
+          </div>
         </section>
 
         <section class="records-panel" aria-labelledby="today-records-title">
@@ -360,7 +365,7 @@
 
             <button id="settings-timer-save" class="btn btn--primary" type="button">💾 保存时长</button>
 
-            <p class="settings-field__hint settings-ios-hint">📱 iPhone 提示：番茄进行时请让应用保持在前台、屏幕不锁（已自动申请屏幕常亮）。若锁屏或切到其他 App，iOS 会暂停页面，到点无法主动响铃，只能在你切回来时立即补响——这是 iOS 的系统限制。</p>
+            <p class="settings-field__hint settings-ios-hint">📱 iPhone 提示：番茄进行时请让应用保持在前台、屏幕不锁（已自动申请屏幕常亮）。若锁屏或切到其他 App，iOS 会暂停页面、到点无法主动响铃。建议使用计时页的【📆 添加到系统日历提醒】按钮，系统日历在锁屏时也能弹出提醒——这是 iOS 限制下最可靠的方案。</p>
           </section>
 
           <section id="settings-project-card" class="settings-card" aria-labelledby="settings-project-title">
