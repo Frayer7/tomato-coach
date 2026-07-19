@@ -1644,6 +1644,18 @@ body {
   stroke: #43A047;
 }
 
+.goal-card--failed {
+  opacity: 0.65;
+}
+
+.goal-card--failed .progress-ring__value {
+  stroke: #9E9E9E;
+}
+
+.goal-card--overdue .progress-ring__value {
+  stroke: #FB8C00;
+}
+
 .goal-done-fold {
   margin-top: 14px;
 }

@@ -36,10 +36,10 @@ const BUILD_DATE = '2026-07-12'; // 每次发布时手动更新此日期
  * targetPomodoros: 目标番茄数
  * startDate: 统计起始日期 YYYY-MM-DD（进度只计此后番茄）
  * deadline: 截止日期 YYYY-MM-DD（可选）
- * status: active | done | paused
+ * status: active | done | paused | failed
  * createdAt: 创建时间，ISO 字符串
- * completionDate: 完成日期，ISO 字符串（status=done 时）
- * completionReason: 完成时填的感想/总结
+ * completionDate: 完成/失败日期，ISO 字符串（status=done/failed 时）
+ * completionReason: 完成感想或失败原因
  * extensions: 延期续目标历史 [{ date, reason, previousTarget, newTarget, previousDeadline, newDeadline }]
  */
 
@@ -334,7 +334,7 @@ function deleteGoal(id) {
 }
 
 function getActiveGoalsForProject(projectId) {
-  return getGoals().filter((goal) => goal.status !== 'paused' && goal.status !== 'done' && goal.projectId === (projectId || UNCATEGORIZED_PROJECT_ID));
+  return getGoals().filter((goal) => goal.status !== 'paused' && goal.status !== 'done' && goal.status !== 'failed' && goal.projectId === (projectId || UNCATEGORIZED_PROJECT_ID));
 }
 
 // 一次性迁移：确保项目预设存在，并把没有 projectId 的旧番茄归到「未分类」
@@ -2416,11 +2416,11 @@ function renderGoals() {
   container.replaceChildren();
   const allGoals = getGoals();
   const activeGoals = allGoals.filter((goal) => goal.status === 'active');
-  const doneGoals = allGoals.filter((goal) => goal.status === 'done').sort((left, right) => {
+  const archivedGoals = allGoals.filter((goal) => goal.status === 'done' || goal.status === 'failed').sort((left, right) => {
     return (right.completionDate || '').localeCompare(left.completionDate || '');
   });
 
-  if (!activeGoals.length && !doneGoals.length) {
+  if (!activeGoals.length && !archivedGoals.length) {
     const empty = document.createElement('div');
     empty.className = 'goals-empty';
     empty.textContent = '还没有目标。点「+ 新建目标」给某个项目设定番茄数目标吧。';
@@ -2438,18 +2438,18 @@ function renderGoals() {
     container.appendChild(createGoalCard(goal));
   });
 
-  // 已完成目标（折叠区）
-  if (doneGoals.length) {
+  // 已归档目标（done + failed，折叠区）
+  if (archivedGoals.length) {
     const fold = document.createElement('details');
     fold.className = 'goal-done-fold';
 
     const summary = document.createElement('summary');
     summary.className = 'goal-done-fold__summary';
-    summary.textContent = `✅ 已完成（${doneGoals.length}）`;
+    summary.textContent = `📦 已归档（${archivedGoals.length}）`;
 
     const list = document.createElement('div');
     list.className = 'goal-done-list';
-    doneGoals.forEach((goal) => {
+    archivedGoals.forEach((goal) => {
       list.appendChild(createGoalCard(goal, { isDone: true }));
     });
 
@@ -2462,10 +2462,22 @@ function createGoalCard(goal, options = {}) {
   const { isDone = false } = options;
   const progress = getGoalProgress(goal);
   const project = getProjectById(goal.projectId);
+  const isFailed = goal.status === 'failed';
+  const isOverdue = !isDone && !isFailed
+    && goal.deadline && goal.deadline < today();
+  const cardStyle = isFailed ? ' goal-card--failed' : (isOverdue ? ' goal-card--overdue' : '');
   const card = document.createElement('article');
-  card.className = `goal-card${isDone ? ' goal-card--done' : ''}`;
+  card.className = `goal-card${isDone ? ' goal-card--done' : ''}${cardStyle}`;
 
-  card.appendChild(createProgressRing(progress.percent));
+  // 逾期目标的进度环用橙色
+  if (isOverdue) {
+    const svg = createProgressRing(progress.percent);
+    const valueCircle = svg.querySelector('.progress-ring__value');
+    if (valueCircle) valueCircle.setAttribute('stroke', '#FB8C00');
+    card.appendChild(svg);
+  } else {
+    card.appendChild(createProgressRing(progress.percent));
+  }
 
   const info = document.createElement('div');
   info.className = 'goal-card__info';
@@ -2488,11 +2500,12 @@ function createGoalCard(goal, options = {}) {
   const meta = document.createElement('div');
   meta.className = 'goal-card__meta';
 
-  if (isDone) {
-    const doneDate = goal.completionDate
-      ? formatDateCN(goal.completionDate.split('T')[0] || goal.completionDate)
+  if (isDone || isFailed) {
+    const dateKey = goal.completionDate
+      ? (goal.completionDate.split('T')[0] || goal.completionDate)
       : '';
-    meta.textContent = `完成于 ${doneDate} · ${progress.done} / ${goal.targetPomodoros} 🍅`;
+    const label = isFailed ? '失败于' : '完成于';
+    meta.textContent = `${label} ${formatDateCN(dateKey)} · ${progress.done} / ${goal.targetPomodoros} 🍅`;
 
     if (goal.completionReason) {
       const reason = document.createElement('div');
@@ -2504,34 +2517,54 @@ function createGoalCard(goal, options = {}) {
     }
   } else {
     const deadlineHint = getGoalDeadlineHint(goal, progress);
-    meta.textContent = `${progress.done} / ${goal.targetPomodoros} 🍅${deadlineHint ? ` · ${deadlineHint}` : ''}`;
+    const overdueTag = isOverdue ? ' ⚠️ 已过截止日期' : '';
+    meta.textContent = `${progress.done} / ${goal.targetPomodoros} 🍅${deadlineHint ? ` · ${deadlineHint}` : ''}${overdueTag}`;
     info.append(title, meta);
   }
 
   const actions = document.createElement('div');
   actions.className = 'goal-card__actions';
 
-  if (!isDone) {
+  if (!isDone && !isFailed) {
     const achieved = progress.percent >= 100;
 
-    // 确认完成：所有活跃目标都显示
-    const doneBtn = document.createElement('button');
-    doneBtn.className = 'goal-card__action';
-    doneBtn.type = 'button';
-    doneBtn.textContent = '✅';
-    doneBtn.setAttribute('aria-label', '确认完成');
-    doneBtn.addEventListener('click', () => openGoalCompleteModal(goal, progress));
-    actions.append(doneBtn);
+    if (isOverdue) {
+      // 逾期目标：延期重新规划 + 宣布失败
+      const replanBtn = document.createElement('button');
+      replanBtn.className = 'goal-card__action';
+      replanBtn.type = 'button';
+      replanBtn.textContent = '🔄';
+      replanBtn.setAttribute('aria-label', '延期重新规划');
+      replanBtn.addEventListener('click', () => openGoalExtendModal(goal, true));
 
-    // 延期续目标：只在达标时才显示
-    if (achieved) {
-      const extendBtn = document.createElement('button');
-      extendBtn.className = 'goal-card__action';
-      extendBtn.type = 'button';
-      extendBtn.textContent = '🔄';
-      extendBtn.setAttribute('aria-label', '延期续目标');
-      extendBtn.addEventListener('click', () => openGoalExtendModal(goal));
-      actions.append(extendBtn);
+      const failBtn = document.createElement('button');
+      failBtn.className = 'goal-card__action';
+      failBtn.type = 'button';
+      failBtn.textContent = '❌';
+      failBtn.setAttribute('aria-label', '宣布失败');
+      failBtn.addEventListener('click', () => openGoalFailModal(goal));
+
+      actions.append(replanBtn, failBtn);
+    } else {
+      // 正常活跃目标：确认完成
+      const doneBtn = document.createElement('button');
+      doneBtn.className = 'goal-card__action';
+      doneBtn.type = 'button';
+      doneBtn.textContent = '✅';
+      doneBtn.setAttribute('aria-label', '确认完成');
+      doneBtn.addEventListener('click', () => openGoalCompleteModal(goal, progress));
+      actions.append(doneBtn);
+
+      // 延期续目标：只在达标时才显示
+      if (achieved) {
+        const extendBtn = document.createElement('button');
+        extendBtn.className = 'goal-card__action';
+        extendBtn.type = 'button';
+        extendBtn.textContent = '🔄';
+        extendBtn.setAttribute('aria-label', '延期续目标');
+        extendBtn.addEventListener('click', () => openGoalExtendModal(goal));
+        actions.append(extendBtn);
+      }
     }
 
     const editBtn = document.createElement('button');
@@ -2698,18 +2731,26 @@ function openGoalCompleteModal(goal, progress) {
   });
 }
 
-function openGoalExtendModal(goal) {
+function openGoalExtendModal(goal, isOverdue = false) {
   const progress = getGoalProgress(goal);
   const currentTarget = goal.targetPomodoros || 0;
   const currentDeadline = goal.deadline || '';
+  const title = isOverdue ? '🔄 延期重新规划' : '🔄 延期续目标';
+  const hint = isOverdue
+    ? `目标「${escapeHtml(goal.title)}」已过截止日期（${goal.deadline || '—'}），当前进度 ${progress.done} / ${currentTarget}。请说明为什么没按时完成，以及新的计划。`
+    : `目标「${escapeHtml(goal.title)}」已投入 ${progress.done} 个番茄（原定 ${currentTarget} 个），但工作还没做完，需要继续推进。`;
+  const reasonPlaceholder = isOverdue
+    ? '为什么没按时完成？之后计划怎么继续？'
+    : '为什么番茄数到了但实际没完成？之后计划怎么继续？';
+
   const modal = openModal(`
-    <h2 class="modal__title">🔄 延期续目标</h2>
+    <h2 class="modal__title">${title}</h2>
     <div class="modal__body">
       <form id="goal-extend-form">
-        <p class="modal__hint">目标「${escapeHtml(goal.title)}」已投入 ${progress.done} 个番茄（原定 ${currentTarget} 个），但工作还没做完，需要继续推进。</p>
+        <p class="modal__hint">${hint}</p>
         <div class="field">
-          <label class="field__label" for="goal-extend-reason">延期原因（必填）</label>
-          <textarea id="goal-extend-reason" class="field__textarea" rows="2" placeholder="为什么番茄数到了但实际没完成？之后计划怎么继续？" required></textarea>
+          <label class="field__label" for="goal-extend-reason">原因（必填）</label>
+          <textarea id="goal-extend-reason" class="field__textarea" rows="2" placeholder="${escapeHtml(reasonPlaceholder)}" required></textarea>
         </div>
         <div class="field">
           <label class="field__label" for="goal-extend-add">追加番茄数</label>
@@ -2722,7 +2763,7 @@ function openGoalExtendModal(goal) {
         <div id="goal-extend-error" class="modal__error" hidden></div>
         <div class="modal__actions">
           <button id="goal-extend-cancel" class="btn btn--ghost" type="button">取消</button>
-          <button class="btn btn--primary" type="submit">确认延期</button>
+          <button class="btn btn--primary" type="submit">确认</button>
         </div>
       </form>
     </div>
@@ -2737,7 +2778,7 @@ function openGoalExtendModal(goal) {
     const reason = modal.querySelector('#goal-extend-reason')?.value.trim() || '';
 
     if (!reason) {
-      error.textContent = '请填写延期原因。';
+      error.textContent = '请填写原因。';
       error.hidden = false;
       return;
     }
@@ -2767,7 +2808,52 @@ function openGoalExtendModal(goal) {
     updateGoal(goal.id, patch);
     closeActiveModal();
     renderGoals();
-    showToast(`目标已延期续订：新增 ${addPomodoros} 个番茄`);
+    showToast(`目标已${isOverdue ? '重新规划' : '延期续订'}：新增 ${addPomodoros} 个番茄`);
+  });
+}
+
+function openGoalFailModal(goal) {
+  const progress = getGoalProgress(goal);
+  const modal = openModal(`
+    <h2 class="modal__title">❌ 宣布目标失败</h2>
+    <div class="modal__body">
+      <form id="goal-fail-form">
+        <p class="modal__hint">目标「${escapeHtml(goal.title)}」已过截止日期（${goal.deadline || '—'}），当前进度 ${progress.done} / ${goal.targetPomodoros}。确认放弃这个目标？</p>
+        <div class="field">
+          <label class="field__label" for="goal-fail-reason">失败原因（必填）</label>
+          <textarea id="goal-fail-reason" class="field__textarea" rows="2" placeholder="为什么没完成？学到了什么？教练以后会看到。" required></textarea>
+        </div>
+        <div id="goal-fail-error" class="modal__error" hidden></div>
+        <div class="modal__actions">
+          <button id="goal-fail-cancel" class="btn btn--ghost" type="button">取消</button>
+          <button class="btn btn--primary" type="submit">确认放弃</button>
+        </div>
+      </form>
+    </div>
+  `);
+
+  const form = modal.querySelector('#goal-fail-form');
+  const error = modal.querySelector('#goal-fail-error');
+  modal.querySelector('#goal-fail-cancel')?.addEventListener('click', closeActiveModal);
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const reason = modal.querySelector('#goal-fail-reason')?.value.trim() || '';
+
+    if (!reason) {
+      error.textContent = '请填写失败原因。';
+      error.hidden = false;
+      return;
+    }
+
+    updateGoal(goal.id, {
+      status: 'failed',
+      completionDate: new Date().toISOString(),
+      completionReason: reason
+    });
+    closeActiveModal();
+    renderGoals();
+    showToast('目标已归档为失败');
   });
 }
 
@@ -4697,7 +4783,7 @@ function exportLLMRecords() {
     .map((goal) => {
       const progress = getGoalProgress(goal);
       const project = getProjectById(goal.projectId);
-      const statusLabel = goal.status === 'done' ? '已完成' : goal.status === 'paused' ? '已暂停' : '进行中';
+      const statusLabel = goal.status === 'done' ? '已完成' : goal.status === 'failed' ? '已失败' : goal.status === 'paused' ? '已暂停' : '进行中';
       const extensionsText = (Array.isArray(goal.extensions) ? goal.extensions : []).map((ext) => {
         return `${ext.date || ''} 从${ext.previousTarget}延至${ext.newTarget}，原因：${ext.reason || ''}`;
       }).join('\n');
