@@ -1656,6 +1656,33 @@ body {
   stroke: #FB8C00;
 }
 
+.goal-action-menu {
+  position: fixed;
+  z-index: 1000;
+  background: #FFFFFF;
+  border-radius: 14px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
+  padding: 8px 0;
+  min-width: 180px;
+}
+
+.goal-action-menu__item {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 12px 18px;
+  font: inherit;
+  font-size: 15px;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.goal-action-menu__item:hover {
+  background: #F5F5F5;
+}
+
 .goal-done-fold {
   margin-top: 14px;
 }

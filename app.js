@@ -2526,55 +2526,17 @@ function createGoalCard(goal, options = {}) {
   actions.className = 'goal-card__actions';
 
   if (!isDone && !isFailed) {
-    const achieved = progress.percent >= 100;
-
-    if (isOverdue) {
-      // 逾期目标：延期重新规划 + 宣布失败
-      const replanBtn = document.createElement('button');
-      replanBtn.className = 'goal-card__action';
-      replanBtn.type = 'button';
-      replanBtn.textContent = '🔄';
-      replanBtn.setAttribute('aria-label', '延期重新规划');
-      replanBtn.addEventListener('click', () => openGoalExtendModal(goal, true));
-
-      const failBtn = document.createElement('button');
-      failBtn.className = 'goal-card__action';
-      failBtn.type = 'button';
-      failBtn.textContent = '❌';
-      failBtn.setAttribute('aria-label', '宣布失败');
-      failBtn.addEventListener('click', () => openGoalFailModal(goal));
-
-      actions.append(replanBtn, failBtn);
-    } else {
-      // 正常活跃目标：确认完成
-      const doneBtn = document.createElement('button');
-      doneBtn.className = 'goal-card__action';
-      doneBtn.type = 'button';
-      doneBtn.textContent = '✅';
-      doneBtn.setAttribute('aria-label', '确认完成');
-      doneBtn.addEventListener('click', () => openGoalCompleteModal(goal, progress));
-      actions.append(doneBtn);
-
-      // 延期续目标：只在达标时才显示
-      if (achieved) {
-        const extendBtn = document.createElement('button');
-        extendBtn.className = 'goal-card__action';
-        extendBtn.type = 'button';
-        extendBtn.textContent = '🔄';
-        extendBtn.setAttribute('aria-label', '延期续目标');
-        extendBtn.addEventListener('click', () => openGoalExtendModal(goal));
-        actions.append(extendBtn);
-      }
-    }
-
-    const editBtn = document.createElement('button');
-    editBtn.className = 'goal-card__action';
-    editBtn.type = 'button';
-    editBtn.textContent = '✏️';
-    editBtn.setAttribute('aria-label', '编辑目标');
-    editBtn.addEventListener('click', () => openGoalEditModal(goal));
-
-    actions.append(editBtn);
+    const menuBtn = document.createElement('button');
+    menuBtn.className = 'goal-card__action goal-card__menu-btn';
+    menuBtn.type = 'button';
+    menuBtn.textContent = '⚙️';
+    menuBtn.setAttribute('aria-label', '目标操作');
+    menuBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      closeGoalActionMenu();
+      showGoalActionMenu(goal, menuBtn, { isOverdue, achieved: progress.percent >= 100 });
+    });
+    actions.append(menuBtn);
   }
 
   const delBtn = document.createElement('button');
@@ -2593,6 +2555,66 @@ function createGoalCard(goal, options = {}) {
   actions.append(delBtn);
   card.append(info, actions);
   return card;
+}
+
+// 关闭当前打开的目标操作菜单
+function closeGoalActionMenu() {
+  document.querySelectorAll('.goal-action-menu').forEach((el) => el.remove());
+}
+
+// 显示目标操作下拉菜单
+function showGoalActionMenu(goal, button, context) {
+  const { isOverdue, achieved } = context;
+  closeGoalActionMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'goal-action-menu';
+
+  const addItem = (emoji, label, handler) => {
+    const item = document.createElement('button');
+    item.className = 'goal-action-menu__item';
+    item.type = 'button';
+    item.textContent = `${emoji} ${label}`;
+    item.addEventListener('click', () => {
+      closeGoalActionMenu();
+      handler();
+    });
+    menu.appendChild(item);
+  };
+
+  if (isOverdue) {
+    addItem('🔄', '延期重新规划', () => openGoalExtendModal(goal, true));
+    addItem('❌', '宣布失败', () => openGoalFailModal(goal));
+  } else {
+    addItem('✅', '确认完成', () => openGoalCompleteModal(goal, getGoalProgress(goal)));
+    if (achieved) {
+      addItem('🔄', '延期续目标', () => openGoalExtendModal(goal));
+    }
+  }
+  addItem('✏️', '编辑目标', () => openGoalEditModal(goal));
+  addItem('🗑️', '删除目标', () => {
+    if (confirm(`删除目标「${goal.title}」？`)) {
+      deleteGoal(goal.id);
+      renderGoals();
+      showToast('目标已删除');
+    }
+  });
+
+  // 定位菜单在按钮下方
+  const rect = button.getBoundingClientRect();
+  menu.style.top = `${rect.bottom + 4}px`;
+  menu.style.right = `${window.innerWidth - rect.right}px`;
+
+  document.body.appendChild(menu);
+
+  // 点击菜单外关闭
+  const onOutside = (event) => {
+    if (!menu.contains(event.target)) {
+      closeGoalActionMenu();
+      document.removeEventListener('click', onOutside);
+    }
+  };
+  window.setTimeout(() => document.addEventListener('click', onOutside), 0);
 }
 
 function openGoalEditModal(goal) {
@@ -6941,6 +6963,9 @@ function initApp() {
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission();
   }
+
+  // 全局：任何地方点击关闭目标操作菜单
+  document.addEventListener('click', () => closeGoalActionMenu());
 }
 
 document.addEventListener('DOMContentLoaded', initApp);
