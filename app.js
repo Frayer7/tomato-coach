@@ -2539,20 +2539,23 @@ function createGoalCard(goal, options = {}) {
     actions.append(menuBtn);
   }
 
-  const delBtn = document.createElement('button');
-  delBtn.className = 'goal-card__action';
-  delBtn.type = 'button';
-  delBtn.textContent = '🗑️';
-  delBtn.setAttribute('aria-label', '删除目标');
-  delBtn.addEventListener('click', () => {
-    if (confirm(`删除目标「${goal.title}」？`)) {
-      deleteGoal(goal.id);
-      renderGoals();
-      showToast('目标已删除');
-    }
-  });
+  // 已完成/已失败卡片保留独立删除按钮（没有⚙️菜单）
+  if (isDone || isFailed) {
+    const delBtn = document.createElement('button');
+    delBtn.className = 'goal-card__action';
+    delBtn.type = 'button';
+    delBtn.textContent = '🗑️';
+    delBtn.setAttribute('aria-label', '删除目标');
+    delBtn.addEventListener('click', () => {
+      if (confirm(`删除目标「${goal.title}」？`)) {
+        deleteGoal(goal.id);
+        renderGoals();
+        showToast('目标已删除');
+      }
+    });
+    actions.append(delBtn);
+  }
 
-  actions.append(delBtn);
   card.append(info, actions);
   return card;
 }
@@ -2587,18 +2590,10 @@ function showGoalActionMenu(goal, button, context) {
     addItem('❌', '宣布失败', () => openGoalFailModal(goal));
   } else {
     addItem('✅', '确认完成', () => openGoalCompleteModal(goal, getGoalProgress(goal)));
-    if (achieved) {
-      addItem('🔄', '延期续目标', () => openGoalExtendModal(goal));
-    }
+    addItem('🔄', achieved ? '延期续目标' : '延期（调整目标）', () => openGoalExtendModal(goal));
   }
   addItem('✏️', '编辑目标', () => openGoalEditModal(goal));
-  addItem('🗑️', '删除目标', () => {
-    if (confirm(`删除目标「${goal.title}」？`)) {
-      deleteGoal(goal.id);
-      renderGoals();
-      showToast('目标已删除');
-    }
-  });
+  addItem('🗑️', '删除目标', () => openGoalDeleteModal(goal));
 
   // 定位菜单在按钮下方
   const rect = button.getBoundingClientRect();
@@ -2615,6 +2610,80 @@ function showGoalActionMenu(goal, button, context) {
     }
   };
   window.setTimeout(() => document.addEventListener('click', onOutside), 0);
+}
+
+function openGoalDeleteModal(goal) {
+  const modal = openModal(`
+    <h2 class="modal__title">删除目标</h2>
+    <div class="modal__body">
+      <p class="modal__hint">「${escapeHtml(goal.title)}」要怎么处理？</p>
+      <div class="modal__actions modal__actions--col">
+        <button id="goal-delete-direct" class="btn btn--ghost" type="button">🗑️ 填错了，直接删除</button>
+        <button id="goal-delete-archive" class="btn btn--secondary" type="button">📝 记录原因并归档</button>
+        <button id="goal-delete-cancel" class="btn btn--ghost" type="button">取消</button>
+      </div>
+    </div>
+  `);
+
+  modal.querySelector('#goal-delete-cancel')?.addEventListener('click', closeActiveModal);
+
+  modal.querySelector('#goal-delete-direct')?.addEventListener('click', () => {
+    closeActiveModal();
+    if (confirm(`确定删除目标「${goal.title}」？此操作不可恢复。`)) {
+      deleteGoal(goal.id);
+      renderGoals();
+      showToast('目标已删除');
+    }
+  });
+
+  modal.querySelector('#goal-delete-archive')?.addEventListener('click', () => {
+    closeActiveModal();
+    openGoalDeleteReasonModal(goal);
+  });
+}
+
+function openGoalDeleteReasonModal(goal) {
+  const modal = openModal(`
+    <h2 class="modal__title">📝 记录原因并归档</h2>
+    <div class="modal__body">
+      <form id="goal-delete-reason-form">
+        <p class="modal__hint">目标「${escapeHtml(goal.title)}」将被归档为"已失败"，LLM 教练以后可以看到。</p>
+        <div class="field">
+          <label class="field__label" for="goal-delete-reason">原因（必填）</label>
+          <textarea id="goal-delete-reason" class="field__textarea" rows="2" placeholder="为什么删除？下次如何避免？（例如：目标设得太大 / 方向错了 / 不再相关）" required></textarea>
+        </div>
+        <div id="goal-delete-reason-error" class="modal__error" hidden></div>
+        <div class="modal__actions">
+          <button id="goal-delete-reason-cancel" class="btn btn--ghost" type="button">取消</button>
+          <button class="btn btn--primary" type="submit">确认归档</button>
+        </div>
+      </form>
+    </div>
+  `);
+
+  const form = modal.querySelector('#goal-delete-reason-form');
+  const error = modal.querySelector('#goal-delete-reason-error');
+  modal.querySelector('#goal-delete-reason-cancel')?.addEventListener('click', closeActiveModal);
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const reason = modal.querySelector('#goal-delete-reason')?.value.trim() || '';
+
+    if (!reason) {
+      error.textContent = '请填写原因。';
+      error.hidden = false;
+      return;
+    }
+
+    updateGoal(goal.id, {
+      status: 'failed',
+      completionDate: new Date().toISOString(),
+      completionReason: `[用户删除] ${reason}`
+    });
+    closeActiveModal();
+    renderGoals();
+    showToast('目标已归档为失败');
+  });
 }
 
 function openGoalEditModal(goal) {

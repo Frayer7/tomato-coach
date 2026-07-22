@@ -1707,6 +1707,16 @@ body {
   margin-top: 6px;
 }
 
+.modal__actions--col {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modal__actions--col .btn {
+  width: 100%;
+  justify-content: center;
+}
+
 .daily-self-note-save {
   margin-top: 6px;
   font-size: 12px;
