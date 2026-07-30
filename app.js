@@ -2586,6 +2586,7 @@ function showGoalActionMenu(goal, button, context) {
   };
 
   if (isOverdue) {
+    addItem('✅', '确认完成', () => openGoalCompleteModal(goal, getGoalProgress(goal)));
     addItem('🔄', '延期重新规划', () => openGoalExtendModal(goal, true));
     addItem('❌', '宣布失败', () => openGoalFailModal(goal));
   } else {
