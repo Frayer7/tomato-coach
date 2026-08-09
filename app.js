@@ -4064,15 +4064,17 @@ function buildPreviousDailyReportsContext() {
   const dailyReports = getReports()
     .filter((report) => report.type === 'daily' && report.dateKey !== today())
     .sort((left, right) => (right.createdAt || '').localeCompare(left.createdAt || ''))
-    .slice(0, 2);
+    .slice(0, 1);
 
   if (!dailyReports.length) {
     return '';
   }
 
-  const lines = ['【你最近写给他的日报原文】（别重复这些话和建议；今天若和昨天类似，就直说"节奏和昨天差不多"，不要硬造新洞察）'];
+  const lines = ['【你最近写给他的日报摘要】（别重复这些观点和建议；今天若和昨天类似，就直说"节奏和昨天差不多"，不要硬造新洞察）'];
   dailyReports.forEach((report) => {
-    lines.push(`— ${formatDateCN(report.dateKey)} 的日报 ——\n${report.content}`);
+    const snippet = String(report.content || '').slice(0, 200);
+    const ellipsis = String(report.content || '').length > 200 ? '…' : '';
+    lines.push(`— ${formatDateCN(report.dateKey)} 的日报 ——\n${snippet}${ellipsis}`);
   });
 
   return lines.join('\n');
@@ -4308,7 +4310,7 @@ async function handleGenerateDailySummary() {
 
   let result = null;
   try {
-    result = await callLLM(buildDailySummarySystemPrompt(records), buildDailySummaryUserMessage(records, selfNote), { temperature: 0.8 });
+    result = await callLLM(buildDailySummarySystemPrompt(records), buildDailySummaryUserMessage(records, selfNote), { temperature: 0.8, timeoutMs: 60000 });
   } catch (error) {
     console.error('[日报] 生成失败：', error);
     showCoachFeedback('生成日报时出错，请重试。');
